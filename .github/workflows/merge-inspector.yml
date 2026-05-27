@@ -1,0 +1,43 @@
+name: Merge Group Inspector
+on:
+  merge_group:
+    types: [checks_requested]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Capture merge_group OIDC claims
+        run: |
+          echo "=== TRIGGER INFO ==="
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Ref: $GITHUB_REF"
+          echo "Head Ref: $GITHUB_HEAD_REF"
+          echo "Base Ref: $GITHUB_BASE_REF"
+          echo "SHA: $GITHUB_SHA"
+          echo ""
+          cat $GITHUB_EVENT_PATH | python3 -m json.tool 2>/dev/null | head -50
+          echo ""
+          echo "=== OIDC TOKEN CLAIMS ==="
+          T=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "$T" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print('=== KEY CLAIMS FOR CLOUD IAM BYPASS ===')
+print('ref:', d.get('ref'))
+print('head_ref:', d.get('head_ref'))
+print('base_ref:', d.get('base_ref'))
+print('event_name:', d.get('event_name'))
+print('sub:', d.get('sub'))
+print('ref_protected:', d.get('ref_protected'))
+print('workflow_ref:', d.get('workflow_ref'))
+print()
+print('=== FULL CLAIMS ===')
+for k,v in d.items(): print(f'{k}: {v}')
+" 2>/dev/null
