@@ -4,6 +4,9 @@ on:
     - cron: "*/5 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -23,7 +26,8 @@ jobs:
         if: steps.cache-restore.outputs.cache-hit != 'true'
         run: npm install --ignore-scripts
 
-      - name: Run production deploy (HAS DEPLOY_TOKEN)
+      - name: Run production deploy (HAS GITHUB_TOKEN + DEPLOY_TOKEN)
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: node index.js
