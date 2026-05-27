@@ -8,33 +8,40 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: Internal URLs and runtime token
+      - name: All ACTIONS_ and runner env vars
         run: |
-          echo "=== INTERNAL URLS ==="
-          echo "RUNTIME_URL: $ACTIONS_RUNTIME_URL"
-          echo "CACHE_URL: $ACTIONS_CACHE_URL"
-          echo "RESULTS_URL: ${ACTIONS_RESULTS_URL:-NOT_SET}"
-          echo "RUN_ID: $GITHUB_RUN_ID"
+          echo "=== ALL ACTIONS_* VARS ==="
+          env | grep -i "^ACTIONS_" | sort
           echo ""
-          echo "=== RUNTIME TOKEN DECODE ==="
-          echo $ACTIONS_RUNTIME_TOKEN | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(k,':',v) for k,v in d.items()]" 2>/dev/null || echo "decode failed"
+          echo "=== ALL GITHUB_* ==="
+          env | grep -i "^GITHUB_" | grep -v "TOKEN" | sort
           echo ""
-          echo "=== CACHE API PROBE ==="
-          curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
-            "${ACTIONS_CACHE_URL}_apis/artifactcache/cache?keys=Linux-node-&version=1"
-          echo ""
-          curl -s -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
-            "${ACTIONS_CACHE_URL}_apis/artifactcache/caches?top=5"
+          echo "=== RUNNER_* ==="
+          env | grep -i "^RUNNER_" | sort
 
-      - name: OIDC token claims
+      - name: Probe OIDC endpoint
         run: |
-          echo "=== OIDC CLAIMS ==="
-          T=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])")
-          echo $T | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(k,':',v) for k,v in d.items()]"
+          echo "=== OIDC URL ==="
+          echo "REQUEST_URL: $ACTIONS_ID_TOKEN_REQUEST_URL"
+          if [ -n "$ACTIONS_ID_TOKEN_REQUEST_URL" ]; then
+            echo "=== REQUESTING OIDC TOKEN ==="
+            T=$(curl -sf \
+              -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sigstore" | python3 -c "import sys,json; print(json.load(sys.stdin)['value'])" 2>/dev/null)
+            if [ -n "$T" ]; then
+              echo "Got token, decoding claims:"
+              echo $T | cut -d. -f2 | base64 -d 2>/dev/null | python3 -m json.tool 2>/dev/null
+            else
+              echo "Failed to get OIDC token"
+            fi
+          else
+            echo "ACTIONS_ID_TOKEN_REQUEST_URL not set - id-token permission not granted"
+          fi
 
       - name: Cloud IMDS probe
         run: |
-          echo "=== IMDS PROBE ==="
-          curl -s --max-time 3 http://169.254.169.254/metadata/instance -H "Metadata: true" && echo "(azure imds ok)" || echo "azure imds: blocked"
-          curl -s --max-time 3 http://169.254.169.254/latest/meta-data/ && echo "(aws imds ok)" || echo "aws imds: blocked"
+          echo "=== AZURE IMDS ==="
+          curl -sv --max-time 5 http://169.254.169.254/metadata/instance?api-version=2021-02-01 -H "Metadata: true" 2>&1 | tail -5 || echo "blocked"
+          echo "=== AWS IMDS v2 ==="
+          TOKEN=$(curl -sf --max-time 3 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+          [ -n "$TOKEN" ] && curl -sf --max-time 3 -H "X-aws-ec2-metadata-token: $TOKEN" "http://169.254.169.254/latest/meta-data/iam/security-credentials/" || echo "aws imds: blocked"
