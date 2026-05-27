@@ -1,0 +1,33 @@
+name: Probe2
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Step summary HTML test
+        run: |
+          {
+            echo "# HTML Injection Test"
+            echo "<script>document.title='XSS'</script>"
+            echo "<img src=x onerror=alert(document.domain)>"
+            echo "<style>body{background:red!important}</style>"
+            echo "<svg onload=alert(1)><rect width=100 height=100/></svg>"
+            echo "<details open ontoggle=alert(2)><summary>!</summary></details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: OIDC workflow_dispatch claims
+        run: |
+          T=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
+          echo "$T" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+print('=== OIDC CLAIMS ===')
+for k,v in sorted(d.items()):
+  print(k+': '+str(v))
+"
